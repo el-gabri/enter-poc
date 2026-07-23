@@ -20,6 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+frontend = [
+    "streamlit>=1.35",
+    "requests>=2.31",
+]
 ocr = [
     "pytesseract>=0.3.10",
     "Pillow>=10.0",

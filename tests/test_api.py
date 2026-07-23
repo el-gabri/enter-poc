@@ -80,6 +80,11 @@ async def test_full_analysis_lifecycle(client: httpx.AsyncClient) -> None:
     assert report["metrics"]["agents_run"] == 5
     assert report["ai_reasoning"].startswith("Como esta analise")
 
+    # markdown export
+    md_response = await client.get(f"/analyses/{job_id}/report.md")
+    assert md_response.status_code == 200
+    assert md_response.text.startswith("# Relatorio de Analise")
+
     # run history persisted
     runs = (await client.get("/runs")).json()
     assert len(runs) == 1

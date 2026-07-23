@@ -44,9 +44,18 @@ Browser -> Streamlit -> FastAPI -> LangGraph Orchestrator
 
 ```bash
 python -m venv .venv && .venv\Scripts\activate   # Windows
-pip install -e ".[dev]"
+pip install -e ".[dev,frontend]"
 copy .env.example .env                            # then fill in your key
 pytest                                            # runs offline (mock mode)
+
+# terminal 1 - API (docs at http://localhost:8000/docs)
+uvicorn app.api.main:app --reload
+
+# terminal 2 - UI (http://localhost:8501)
+streamlit run frontend/streamlit_app.py
+
+# evaluation suite
+python -m app.evaluation
 ```
 
 ## Project status
@@ -61,6 +70,7 @@ Built milestone by milestone; each design decision recorded as an ADR.
 - [x] M4 - Observability (run store) + evaluation harness
       (`python -m app.evaluation`)
 - [x] M5 - FastAPI backend (async jobs, per-stage progress, run history)
-- [ ] M6 - Streamlit frontend
+- [x] M6 - Streamlit frontend (live agent stepper, risk cards, expandable
+      reasoning, MD/JSON export)
 - [ ] M7 - DataJud enrichment
 - [ ] M8 - Docker, docs, screenshots

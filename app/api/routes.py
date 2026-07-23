@@ -3,10 +3,12 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import PlainTextResponse
 
 from app.api.jobs import AnalysisJobManager, Job
 from app.api.schemas import JobCreated, JobState, JobStatus
 from app.observability.store import RunStore
+from app.reporting.markdown import render_markdown
 from app.schemas.report import LitigationReport
 
 router = APIRouter()
@@ -74,6 +76,12 @@ async def get_report(job_id: str, manager: JobManagerDep) -> LitigationReport:
     if job.result is None or job.result.report is None:
         raise HTTPException(status_code=422, detail={"errors": job.errors})
     return job.result.report
+
+
+@router.get("/analyses/{job_id}/report.md", response_class=PlainTextResponse)
+async def get_report_markdown(job_id: str, manager: JobManagerDep) -> str:
+    report = await get_report(job_id, manager)
+    return render_markdown(report)
 
 
 @router.get("/runs")
