@@ -1,0 +1,26 @@
+services:
+  api:
+    build:
+      context: .
+      target: api
+    env_file: .env
+    environment:
+      LITIGATION_DATA_DIR: /app/data
+    ports:
+      - "8000:8000"
+    volumes:
+      - copilot-data:/app/data   # ChromaDB, uploads, run history persist here
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+    environment:
+      LITIGATION_API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+
+volumes:
+  copilot-data:

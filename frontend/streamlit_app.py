@@ -7,12 +7,13 @@ Run:
     streamlit run frontend/streamlit_app.py
 """
 
+import os
 import time
 
 import requests
 import streamlit as st
 
-API_URL = st.secrets.get("api_url", "http://localhost:8000")
+API_URL = os.getenv("LITIGATION_API_URL", "http://localhost:8000")
 POLL_SECONDS = 1.0
 
 STAGE_LABELS = {
