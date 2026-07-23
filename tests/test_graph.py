@@ -21,6 +21,8 @@ from app.schemas.lawsuit import (
     Party,
     PartyRole,
 )
+from app.schemas.risk import RiskAssessment, RiskItem, RiskLevel
+from app.schemas.strategy import ActionPriority, RecommendedAction, StrategyPlan
 from app.schemas.trace import AgentStatus
 
 
@@ -83,10 +85,52 @@ def _canned_responses() -> dict:
             )
         ],
     )
+    risk = RiskAssessment(
+        overall_level=RiskLevel.MEDIUM,
+        overall=ConfidentConclusion(
+            statement="Risco medio de condenacao",
+            confidence=0.7,
+            reasoning="Pedido documentado, mas valor moderado",
+        ),
+        risks=[
+            RiskItem(
+                title="Inversao do onus da prova",
+                level=RiskLevel.HIGH,
+                conclusion=ConfidentConclusion(
+                    statement="Provavel inversao (CDC)",
+                    confidence=0.8,
+                    reasoning="Relacao de consumo caracterizada",
+                ),
+                financial_exposure="R$ 20.000,00",
+            )
+        ],
+    )
+    strategy = StrategyPlan(
+        overall_approach=ConfidentConclusion(
+            statement="Postura hibrida: contestar e negociar",
+            confidence=0.65,
+            reasoning="Risco medio com exposicao limitada",
+        ),
+        settlement=ConfidentConclusion(
+            statement="Acordo recomendado ate R$ 8.000,00",
+            confidence=0.6,
+            reasoning="Evita sucumbencia e custo processual",
+        ),
+        next_actions=[
+            RecommendedAction(
+                action="Verificar prazo de contestacao",
+                priority=ActionPriority.URGENT,
+                rationale="Prazo processual improrrogavel",
+            )
+        ],
+        missing_information=["contrato assinado", "faturas do periodo"],
+    )
     return {
         LawsuitClassification: classification,
         LawsuitExtraction: extraction,
         LegalAnalysis: analysis,
+        RiskAssessment: risk,
+        StrategyPlan: strategy,
     }
 
 
@@ -108,15 +152,32 @@ async def test_graph_runs_end_to_end() -> None:
     assert state.classification.lawsuit_type is LawsuitType.CONSUMER
     assert state.extraction.claim_value.amount == 20000.0
     assert state.legal_analysis.claims[0].legal_basis == "CDC art. 42"
-    # observability: one trace per agent, all successful, all metered
-    assert [t.agent for t in state.traces] == [
+    assert state.risk.overall_level is RiskLevel.MEDIUM
+    assert state.strategy.next_actions[0].priority is ActionPriority.URGENT
+
+    # observability: one trace per agent (risk/strategy ran in parallel)
+    assert {t.agent for t in state.traces} == {
         "classifier",
         "entity_extraction",
         "legal_analysis",
-    ]
+        "risk_assessment",
+        "strategy",
+    }
     assert all(t.status is AgentStatus.SUCCESS for t in state.traces)
     assert all(t.llm_meta is not None for t in state.traces)
     assert all(t.llm_meta.prompt_version for t in state.traces)
+
+    # composed report
+    report = state.report
+    assert report is not None
+    assert report.executive_summary
+    assert report.possible_settlement.statement.startswith("Acordo")
+    assert "contrato assinado" in report.missing_information
+    assert "judge" in report.missing_information  # from extraction schema
+    assert 0.0 < report.confidence_level <= 1.0
+    assert report.metrics.agents_run == 5
+    assert report.metrics.total_tokens > 0
+    assert "classifier:v1.0" in report.metrics.prompt_versions
 
 
 async def test_graph_halts_on_agent_failure() -> None:
@@ -132,8 +193,30 @@ async def test_graph_halts_on_agent_failure() -> None:
     assert state.errors[0].startswith("classifier:")
     assert state.extraction is None  # ...and downstream agents never ran
     assert state.legal_analysis is None
+    assert state.report is None  # compose never reached
     assert state.traces[0].status is AgentStatus.FAILED
     assert state.traces[0].error is not None
+
+
+async def test_partial_report_when_one_branch_fails() -> None:
+    """If only the risk branch fails, we still deliver a partial report."""
+
+    class RiskFailsLLM(MockLLMClient):
+        async def parse(self, *, schema, **kwargs):  # type: ignore[override]
+            if schema is RiskAssessment:
+                raise RuntimeError("risk provider timeout")
+            return await super().parse(schema=schema, **kwargs)
+
+    llm = RiskFailsLLM(responses=_canned_responses())
+    graph = build_analysis_graph(llm, _rag())
+    result = await graph.ainvoke(AnalysisState(document=_document()))
+    state = AnalysisState(**result)
+
+    assert state.errors and state.errors[0].startswith("risk_assessment:")
+    assert state.report is not None  # partial delivery, not total failure
+    assert state.report.legal_risks is None
+    assert state.report.suggested_strategy is not None
+    assert "ATENCAO" in state.report.ai_reasoning  # failure disclosed
 
 
 async def test_prompt_placeholders_render() -> None:

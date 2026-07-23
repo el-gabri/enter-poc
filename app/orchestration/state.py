@@ -13,6 +13,9 @@ from app.schemas.analysis import LawsuitClassification, LegalAnalysis
 from app.schemas.document import ParsedDocument
 from app.schemas.lawsuit import LawsuitExtraction
 from app.schemas.rag import Chunk
+from app.schemas.report import LitigationReport
+from app.schemas.risk import RiskAssessment
+from app.schemas.strategy import StrategyPlan
 from app.schemas.trace import AgentTrace
 
 
@@ -26,6 +29,9 @@ class AnalysisState(BaseModel):
     classification: LawsuitClassification | None = None
     extraction: LawsuitExtraction | None = None
     legal_analysis: LegalAnalysis | None = None
+    risk: RiskAssessment | None = None
+    strategy: StrategyPlan | None = None
+    report: LitigationReport | None = None
 
     # Observability (append-only, parallel-safe)
     traces: Annotated[list[AgentTrace], operator.add] = Field(default_factory=list)

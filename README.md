@@ -56,7 +56,8 @@ Built milestone by milestone; each design decision recorded as an ADR.
 - [x] M0 - Foundation: config, logging, LLM provider abstraction, ADRs
 - [x] M1 - Ingestion: PDF -> text, OCR, language detection, domain schemas
 - [x] M2 - RAG: section-aware chunking, embeddings, ChromaDB behind a port
-- [ ] M3 - Agents: LangGraph pipeline with structured outputs
+- [x] M3 - Agents: LangGraph pipeline (5 agents, parallel risk/strategy,
+      deterministic report composer)
 - [ ] M4 - Observability + evaluation harness
 - [ ] M5 - FastAPI backend (async jobs)
 - [ ] M6 - Streamlit frontend
