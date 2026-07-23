@@ -60,7 +60,7 @@ Built milestone by milestone; each design decision recorded as an ADR.
       deterministic report composer)
 - [x] M4 - Observability (run store) + evaluation harness
       (`python -m app.evaluation`)
-- [ ] M5 - FastAPI backend (async jobs)
+- [x] M5 - FastAPI backend (async jobs, per-stage progress, run history)
 - [ ] M6 - Streamlit frontend
 - [ ] M7 - DataJud enrichment
 - [ ] M8 - Docker, docs, screenshots
