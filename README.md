@@ -58,7 +58,8 @@ Built milestone by milestone; each design decision recorded as an ADR.
 - [x] M2 - RAG: section-aware chunking, embeddings, ChromaDB behind a port
 - [x] M3 - Agents: LangGraph pipeline (5 agents, parallel risk/strategy,
       deterministic report composer)
-- [ ] M4 - Observability + evaluation harness
+- [x] M4 - Observability (run store) + evaluation harness
+      (`python -m app.evaluation`)
 - [ ] M5 - FastAPI backend (async jobs)
 - [ ] M6 - Streamlit frontend
 - [ ] M7 - DataJud enrichment
