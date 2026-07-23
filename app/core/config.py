@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     chunk_overlap_chars: int = 150
     retrieval_k: int = 6
 
+    # --- DataJud (CNJ public API) ---
+    # The key is published openly by CNJ at
+    # https://datajud-wiki.cnj.jus.br/api-publica/acesso/ but is still
+    # injected via environment so rotation never requires a code change.
+    datajud_api_key: str | None = Field(default=None, repr=False)
+    datajud_base_url: str = "https://api-publica.datajud.cnj.jus.br"
+
     # --- Output ---
     report_language: str = "pt-BR"
 
