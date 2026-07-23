@@ -21,6 +21,13 @@ class LLMProvider(str, Enum):
     MOCK = "mock"
 
 
+class VectorStoreBackend(str, Enum):
+    """Supported vector store backends (see ADR 0003)."""
+
+    CHROMA = "chroma"
+    MEMORY = "memory"
+
+
 class Settings(BaseSettings):
     """Runtime configuration for the whole application."""
 
@@ -39,6 +46,12 @@ class Settings(BaseSettings):
 
     # --- Storage ---
     data_dir: Path = Path("./data")
+    vector_store: VectorStoreBackend = VectorStoreBackend.CHROMA
+
+    # --- RAG ---
+    chunk_target_chars: int = 1200
+    chunk_overlap_chars: int = 150
+    retrieval_k: int = 6
 
     # --- Output ---
     report_language: str = "pt-BR"
