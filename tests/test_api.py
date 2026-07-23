@@ -77,13 +77,24 @@ async def test_full_analysis_lifecycle(client: httpx.AsyncClient) -> None:
     report_response = await client.get(f"/analyses/{job_id}/report")
     assert report_response.status_code == 200
     report = report_response.json()
-    assert report["metrics"]["agents_run"] == 5
+    assert report["metrics"]["agents_run"] == 6
     assert report["ai_reasoning"].startswith("Como esta analise")
 
-    # markdown export
+    # datajud enrichment is disabled in tests (no key) but always reported
+    assert report["datajud"]["attempted"] is False
+
+    # exports: markdown, pdf, docx
     md_response = await client.get(f"/analyses/{job_id}/report.md")
     assert md_response.status_code == 200
     assert md_response.text.startswith("# Relatorio de Analise")
+
+    pdf_response = await client.get(f"/analyses/{job_id}/report.pdf")
+    assert pdf_response.status_code == 200
+    assert pdf_response.content.startswith(b"%PDF")
+
+    docx_response = await client.get(f"/analyses/{job_id}/report.docx")
+    assert docx_response.status_code == 200
+    assert docx_response.content.startswith(b"PK")  # zip container
 
     # run history persisted
     runs = (await client.get("/runs")).json()

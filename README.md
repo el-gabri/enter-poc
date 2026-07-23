@@ -72,5 +72,5 @@ Built milestone by milestone; each design decision recorded as an ADR.
 - [x] M5 - FastAPI backend (async jobs, per-stage progress, run history)
 - [x] M6 - Streamlit frontend (live agent stepper, risk cards, expandable
       reasoning, MD/JSON export)
-- [ ] M7 - DataJud enrichment
+- [x] M7 - DataJud (CNJ) enrichment + PDF/DOCX export
 - [ ] M8 - Docker, docs, screenshots

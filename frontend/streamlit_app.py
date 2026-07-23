@@ -261,19 +261,34 @@ if job_id := st.session_state.get("job_id"):
     st.divider()
     import json
 
-    col_md, col_json = st.columns(2)
-    markdown_text = api_get(f"/analyses/{job_id}/report.md").text
+    col_md, col_pdf, col_docx, col_json = st.columns(4)
+    doc_id = report["doc_id"]
     col_md.download_button(
         "Baixar Markdown",
-        data=markdown_text,
-        file_name=f"relatorio_{report['doc_id']}.md",
+        data=api_get(f"/analyses/{job_id}/report.md").text,
+        file_name=f"relatorio_{doc_id}.md",
         mime="text/markdown",
+        use_container_width=True,
+    )
+    col_pdf.download_button(
+        "Baixar PDF",
+        data=api_get(f"/analyses/{job_id}/report.pdf").content,
+        file_name=f"relatorio_{doc_id}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+    col_docx.download_button(
+        "Baixar DOCX",
+        data=api_get(f"/analyses/{job_id}/report.docx").content,
+        file_name=f"relatorio_{doc_id}.docx",
+        mime="application/vnd.openxmlformats-officedocument"
+        ".wordprocessingml.document",
         use_container_width=True,
     )
     col_json.download_button(
         "Baixar JSON",
         data=json.dumps(report, ensure_ascii=False, indent=2),
-        file_name=f"relatorio_{report['doc_id']}.json",
+        file_name=f"relatorio_{doc_id}.json",
         mime="application/json",
         use_container_width=True,
     )

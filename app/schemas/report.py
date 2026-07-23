@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.analysis import ClaimAnalysis, LawsuitClassification, TimelineEvent
 from app.schemas.common import ConfidentConclusion
+from app.schemas.enrichment import DataJudEnrichment
 from app.schemas.lawsuit import LawsuitExtraction
 from app.schemas.risk import RiskAssessment
 from app.schemas.strategy import StrategyPlan
@@ -49,6 +50,9 @@ class LitigationReport(BaseModel):
     legal_risks: RiskAssessment | None = None
     suggested_strategy: StrategyPlan | None = None
     possible_settlement: ConfidentConclusion | None = None
+    datajud: DataJudEnrichment | None = Field(
+        default=None, description="Validation against official CNJ court records"
+    )
 
     # Explainability & observability
     confidence_level: float = Field(

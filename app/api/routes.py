@@ -3,7 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from app.api.jobs import AnalysisJobManager, Job
 from app.api.schemas import JobCreated, JobState, JobStatus
@@ -82,6 +82,35 @@ async def get_report(job_id: str, manager: JobManagerDep) -> LitigationReport:
 async def get_report_markdown(job_id: str, manager: JobManagerDep) -> str:
     report = await get_report(job_id, manager)
     return render_markdown(report)
+
+
+@router.get("/analyses/{job_id}/report.docx")
+async def get_report_docx(job_id: str, manager: JobManagerDep) -> Response:
+    from app.reporting.convert import render_docx
+
+    report = await get_report(job_id, manager)
+    return Response(
+        content=render_docx(render_markdown(report)),
+        media_type="application/vnd.openxmlformats-officedocument"
+        ".wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="relatorio_{report.doc_id}.docx"'
+        },
+    )
+
+
+@router.get("/analyses/{job_id}/report.pdf")
+async def get_report_pdf(job_id: str, manager: JobManagerDep) -> Response:
+    from app.reporting.convert import render_pdf
+
+    report = await get_report(job_id, manager)
+    return Response(
+        content=render_pdf(render_markdown(report)),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="relatorio_{report.doc_id}.pdf"'
+        },
+    )
 
 
 @router.get("/runs")

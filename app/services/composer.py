@@ -40,6 +40,7 @@ def compose_report(state: object) -> LitigationReport:
         legal_risks=risk,
         suggested_strategy=strategy,
         possible_settlement=strategy.settlement if strategy else None,
+        datajud=getattr(state, "enrichment", None),
         confidence_level=_aggregate_confidence(conclusions),
         ai_reasoning=_build_ai_reasoning(state, traces),
         warnings=list(document.warnings),

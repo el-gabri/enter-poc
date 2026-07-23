@@ -23,6 +23,7 @@ from app.llm.factory import create_llm_client
 from app.observability.store import RunStore
 from app.orchestration.graph import build_analysis_graph
 from app.rag.factory import create_rag_pipeline
+from app.services.analysis import create_datajud_client
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -37,7 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.run_store = run_store
         app.state.job_manager = AnalysisJobManager(
             ingestion=DocumentIngestionService(ocr_engine=create_default_ocr_engine()),
-            graph=build_analysis_graph(llm, rag),
+            graph=build_analysis_graph(llm, rag, create_datajud_client(settings)),
             run_store=run_store,
             uploads_dir=settings.uploads_dir,
         )

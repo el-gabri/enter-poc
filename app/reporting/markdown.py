@@ -130,6 +130,29 @@ def render_markdown(report: LitigationReport) -> str:  # noqa: PLR0912, PLR0915
         md += _conclusion(report.possible_settlement)
         md += [""]
 
+    if report.datajud and report.datajud.attempted:
+        md += ["## Validacao DataJud (CNJ)", ""]
+        if report.datajud.found and report.datajud.info:
+            info = report.datajud.info
+            md += [
+                "Processo localizado na base oficial do CNJ.",
+                "",
+                f"- Tribunal: {info.tribunal or '-'}",
+                f"- Classe: {info.court_class or '-'}",
+                f"- Orgao julgador: {info.court_body or '-'}",
+                f"- Assuntos: {', '.join(info.subjects) or '-'}",
+                f"- Ajuizamento: {info.filing_date or '-'}",
+                f"- Movimentacoes: {info.movement_count}",
+            ]
+            if info.latest_movement:
+                md.append(
+                    f"- Ultima movimentacao: {info.latest_movement.name} "
+                    f"({info.latest_movement.date or 's/ data'})"
+                )
+        else:
+            md += [f"- {note}" for note in report.datajud.notes]
+        md += [""]
+
     md += [
         "## Como a IA Chegou a Estas Conclusoes",
         "",

@@ -27,6 +27,8 @@ from app.agents.legal_analysis import LegalAnalysisAgent
 from app.agents.risk import RiskAssessmentAgent
 from app.agents.strategy import StrategyAgent
 from app.core.logging import get_logger
+from app.enrichment.datajud import DataJudClient
+from app.enrichment.node import make_enrich_node
 from app.llm.base import LLMClient
 from app.orchestration.state import AnalysisState
 from app.rag.pipeline import RagPipeline
@@ -60,7 +62,9 @@ def _halt_on_error(state: AnalysisState) -> str:
     return "halt" if state.errors else "continue"
 
 
-def build_analysis_graph(llm: LLMClient, rag: RagPipeline):
+def build_analysis_graph(
+    llm: LLMClient, rag: RagPipeline, datajud: DataJudClient | None = None
+):
     """Compose the analysis pipeline. Dependencies injected at the root."""
 
     async def index_node(state: AnalysisState) -> dict:
@@ -88,21 +92,28 @@ def build_analysis_graph(llm: LLMClient, rag: RagPipeline):
     builder.add_node("analyze", _agent_node(analyst, "legal_analysis"))
     builder.add_node("risk", _agent_node(risk_assessor, "risk"))
     builder.add_node("strategy", _agent_node(strategist, "strategy"))
+    builder.add_node("enrich", make_enrich_node(datajud))
     builder.add_node("compose", compose_node)
 
     builder.add_edge(START, "index")
-    for source, target in [("index", "classify"), ("classify", "extract"), ("extract", "analyze")]:
+    for source, target in [("index", "classify"), ("classify", "extract")]:
         builder.add_conditional_edges(
             source, _halt_on_error, {"continue": target, "halt": END}
         )
-    # fan-out: risk and strategy run in parallel after the legal analysis
+    # fan-out 1: legal analysis and DataJud enrichment are independent
+    builder.add_conditional_edges(
+        "extract",
+        lambda s: ["analyze", "enrich"] if not s.errors else "halt",
+        {"analyze": "analyze", "enrich": "enrich", "halt": END},
+    )
+    # fan-out 2: risk and strategy run in parallel after the legal analysis
     builder.add_conditional_edges(
         "analyze",
         lambda s: ["risk", "strategy"] if not s.errors else "halt",
         {"risk": "risk", "strategy": "strategy", "halt": END},
     )
-    # fan-in: compose waits for both branches; runs even on partial failure
-    builder.add_edge(["risk", "strategy"], "compose")
+    # fan-in: compose waits for all branches; runs even on partial failure
+    builder.add_edge(["risk", "strategy", "enrich"], "compose")
     builder.add_edge("compose", END)
 
     return builder.compile()

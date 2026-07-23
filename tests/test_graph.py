@@ -155,17 +155,19 @@ async def test_graph_runs_end_to_end() -> None:
     assert state.risk.overall_level is RiskLevel.MEDIUM
     assert state.strategy.next_actions[0].priority is ActionPriority.URGENT
 
-    # observability: one trace per agent (risk/strategy ran in parallel)
+    # observability: one trace per agent (risk/strategy/enrich in parallel)
     assert {t.agent for t in state.traces} == {
         "classifier",
         "entity_extraction",
         "legal_analysis",
         "risk_assessment",
         "strategy",
+        "datajud_enrichment",
     }
     assert all(t.status is AgentStatus.SUCCESS for t in state.traces)
-    assert all(t.llm_meta is not None for t in state.traces)
-    assert all(t.llm_meta.prompt_version for t in state.traces)
+    llm_traces = [t for t in state.traces if t.llm_meta is not None]
+    assert len(llm_traces) == 5  # enrichment is not an LLM agent
+    assert all(t.llm_meta.prompt_version for t in llm_traces)
 
     # composed report
     report = state.report
@@ -175,7 +177,8 @@ async def test_graph_runs_end_to_end() -> None:
     assert "contrato assinado" in report.missing_information
     assert "judge" in report.missing_information  # from extraction schema
     assert 0.0 < report.confidence_level <= 1.0
-    assert report.metrics.agents_run == 5
+    assert report.metrics.agents_run == 6  # 5 LLM agents + enrichment
+    assert report.datajud is not None and report.datajud.attempted is False
     assert report.metrics.total_tokens > 0
     assert "classifier:v1.0" in report.metrics.prompt_versions
 

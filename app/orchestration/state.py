@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.analysis import LawsuitClassification, LegalAnalysis
 from app.schemas.document import ParsedDocument
+from app.schemas.enrichment import DataJudEnrichment
 from app.schemas.lawsuit import LawsuitExtraction
 from app.schemas.rag import Chunk
 from app.schemas.report import LitigationReport
@@ -31,6 +32,7 @@ class AnalysisState(BaseModel):
     legal_analysis: LegalAnalysis | None = None
     risk: RiskAssessment | None = None
     strategy: StrategyPlan | None = None
+    enrichment: DataJudEnrichment | None = None
     report: LitigationReport | None = None
 
     # Observability (append-only, parallel-safe)

@@ -42,6 +42,6 @@ async def test_service_analyzes_pdf_offline(tmp_path: Path) -> None:
     assert state.errors == []
     assert state.report is not None
     assert state.report.doc_id == state.document.doc_id
-    assert state.report.metrics.agents_run == 5
+    assert state.report.metrics.agents_run == 6
     # mock provider synthesizes placeholder outputs; the pipeline shape holds
     assert state.report.ai_reasoning.startswith("Como esta analise")
