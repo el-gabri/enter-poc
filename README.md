@@ -54,7 +54,7 @@ pytest                                            # runs offline (mock mode)
 Built milestone by milestone; each design decision recorded as an ADR.
 
 - [x] M0 - Foundation: config, logging, LLM provider abstraction, ADRs
-- [ ] M1 - Ingestion: PDF -> text, OCR, language detection, domain schemas
+- [x] M1 - Ingestion: PDF -> text, OCR, language detection, domain schemas
 - [ ] M2 - RAG: chunking, embeddings, ChromaDB behind a port
 - [ ] M3 - Agents: LangGraph pipeline with structured outputs
 - [ ] M4 - Observability + evaluation harness
