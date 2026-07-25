@@ -51,7 +51,9 @@ class LawsuitAnalysisService:
 
 def create_analysis_service(settings: Settings) -> LawsuitAnalysisService:
     """Composition root for the full analysis pipeline."""
-    ingestion = DocumentIngestionService(ocr_engine=create_default_ocr_engine())
+    ingestion = DocumentIngestionService(
+        ocr_engine=create_default_ocr_engine(), max_pages=settings.max_document_pages
+    )
     llm = create_llm_client(settings)
     rag = create_rag_pipeline(settings)
     datajud = create_datajud_client(settings)

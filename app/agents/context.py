@@ -35,17 +35,20 @@ def format_context(
     max_chars: int = MAX_CONTEXT_CHARS,
 ) -> str:
     """Build the context block: document head + cited retrieval results."""
+    first_page_text = document.pages[0].text[:DOC_HEAD_CHARS] if document.pages else ""
     parts: list[str] = [
-        f"[INICIO DO DOCUMENTO | {document.filename} | p.1]\n"
-        f"{document.full_text[:DOC_HEAD_CHARS]}"
+        f"<document_excerpt source=\"{document.filename}\" page=\"1\">\n"
+        f"{first_page_text}\n"
+        "</document_excerpt>"
     ]
     used = len(parts[0])
     for item in retrieved:
         chunk = item.chunk
         section = chunk.section or "sem secao"
         block = (
-            f"[{chunk.chunk_id} | {section} | p.{chunk.page_start}-{chunk.page_end}]\n"
-            f"{chunk.text}"
+            f"<document_excerpt chunk_id=\"{chunk.chunk_id}\" section=\"{section}\" "
+            f"pages=\"{chunk.page_start}-{chunk.page_end}\">\n{chunk.text}\n"
+            "</document_excerpt>"
         )
         if used + len(block) > max_chars:
             break
@@ -58,5 +61,5 @@ async def retrieve_for_queries(
     rag: RagPipeline, doc_id: str, queries: list[str], k: int = 4
 ) -> list[RetrievedChunk]:
     """Run several targeted retrievals and merge the results."""
-    results = [await rag.retrieve(query, doc_id=doc_id, k=k) for query in queries]
+    results = await rag.retrieve_many(queries, doc_id=doc_id, k=k)
     return merge_retrievals(results)

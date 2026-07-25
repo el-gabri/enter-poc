@@ -11,6 +11,7 @@ schema itself.
 from app.schemas.common import ConfidentConclusion
 from app.schemas.report import LitigationReport, RunMetrics
 from app.schemas.trace import AgentStatus, AgentTrace
+from app.services.citations import validate_report_citations
 
 
 def compose_report(state: object) -> LitigationReport:
@@ -26,7 +27,7 @@ def compose_report(state: object) -> LitigationReport:
     conclusions = _collect_conclusions(classification, analysis, risk, strategy)
     missing = _missing_information(extraction, strategy)
 
-    return LitigationReport(
+    report = LitigationReport(
         doc_id=document.doc_id,
         filename=document.filename,
         language=document.language,
@@ -43,10 +44,25 @@ def compose_report(state: object) -> LitigationReport:
         datajud=getattr(state, "enrichment", None),
         confidence_level=_aggregate_confidence(conclusions),
         ai_reasoning=_build_ai_reasoning(state, traces),
-        warnings=list(document.warnings),
+        warnings=[*document.warnings, *_error_warnings(state)],
         metrics=_build_metrics(traces),
         traces=traces,
     )
+    citation_result = validate_report_citations(
+        report, document, state.chunks  # type: ignore[attr-defined]
+    )
+    if citation_result.rejected_citations:
+        report.warnings.append(
+            f"{citation_result.rejected_citations} citacao(oes) com localizacao de "
+            "fonte invalida foram removidas do relatorio."
+        )
+    if citation_result.conclusions_without_verified_citation:
+        report.warnings.append(
+            "Revisao humana obrigatoria: "
+            f"{citation_result.conclusions_without_verified_citation}/"
+            f"{citation_result.total_conclusions} conclusao(oes) nao possuem citacao verificada."
+        )
+    return report
 
 
 def _collect_conclusions(
@@ -101,6 +117,16 @@ def _build_metrics(traces: list[AgentTrace]) -> RunMetrics:
         ),
         agents_run=len(traces),
     )
+
+
+def _error_warnings(state: object) -> list[str]:
+    errors: list[str] = getattr(state, "errors", [])
+    if not errors:
+        return []
+    return [
+        "Este e um relatorio parcial. Etapas do pipeline que falharam: "
+        + "; ".join(errors)
+    ]
 
 
 def _build_ai_reasoning(state: object, traces: list[AgentTrace]) -> str:

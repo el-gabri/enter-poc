@@ -6,27 +6,16 @@ involved (see ADR 0008). Completeness and accuracy compare extraction
 output against golden labels.
 """
 
-import re
-import unicodedata
-
 from app.schemas.common import ConfidentConclusion
 from app.schemas.evaluation import MetricResult
 from app.schemas.lawsuit import LawsuitExtraction, PartyRole
 from app.schemas.report import LitigationReport
-
-
-def _normalize(text: str) -> str:
-    """Lowercase, strip accents, collapse whitespace and punctuation."""
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    text = re.sub(r"[^\w\s]", " ", text.casefold())
-    return re.sub(r"\s+", " ", text).strip()
+from app.services.citations import normalize_text, quote_matches
 
 
 def citation_supported(quote: str, document_text: str) -> bool:
     """True if the quoted passage really occurs in the document."""
-    normalized_quote = _normalize(quote)
-    return bool(normalized_quote) and normalized_quote in _normalize(document_text)
+    return quote_matches(quote, document_text)
 
 
 def _all_conclusions(report: LitigationReport) -> list[ConfidentConclusion]:
@@ -101,7 +90,7 @@ def extraction_accuracy(
     checks: list[tuple[str, bool]] = []
 
     def _contains(haystack: str | None, needle: str) -> bool:
-        return haystack is not None and _normalize(needle) in _normalize(haystack)
+        return haystack is not None and normalize_text(needle) in normalize_text(haystack)
 
     if "lawsuit_type" in expected:
         pass  # scored separately in classification_accuracy

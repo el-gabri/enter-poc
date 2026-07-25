@@ -5,6 +5,8 @@ Everything else (chunking policy, embedding provider, store backend) is
 injected - agents never know which vector database is running.
 """
 
+import asyncio
+
 from app.core.logging import get_logger
 from app.rag.chunking import SectionAwareChunker
 from app.rag.embeddings import EmbeddingClient
@@ -60,3 +62,29 @@ class RagPipeline:
             top_score=round(results[0].score, 3) if results else None,
         )
         return results
+
+    async def retrieve_many(
+        self, queries: list[str], doc_id: str, k: int | None = None
+    ) -> list[list[RetrievedChunk]]:
+        """Retrieve context for several queries with one embedding request.
+
+        Agent prompts commonly ask several focused questions of the same
+        document. Batching their embeddings reduces provider round-trips and
+        querying the store concurrently preserves the async latency benefit.
+        """
+        if not queries:
+            return []
+        vectors = await self._embedder.embed(queries)
+        results = await asyncio.gather(
+            *(
+                self._store.query(vector, doc_id=doc_id, k=k or self._default_k)
+                for vector in vectors
+            )
+        )
+        logger.info(
+            "chunks_retrieved_batch",
+            doc_id=doc_id,
+            queries=len(queries),
+            results=sum(len(items) for items in results),
+        )
+        return list(results)

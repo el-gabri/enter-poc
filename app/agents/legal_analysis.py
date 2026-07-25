@@ -1,6 +1,6 @@
 """Legal analysis agent."""
 
-from app.agents.base import BaseAgent
+from app.agents.base import DOCUMENT_SAFETY_INSTRUCTION, BaseAgent
 from app.agents.context import format_context, retrieve_for_queries
 from app.llm.base import LLMClient
 from app.prompts.legal_analysis import LEGAL_ANALYSIS_PROMPT
@@ -32,7 +32,10 @@ class LegalAnalysisAgent(BaseAgent[LegalAnalysis]):
         lawsuit_type = (
             classification.lawsuit_type.value if classification else "desconhecida"
         )
-        return self.prompt.system.format(lawsuit_type=lawsuit_type)
+        return (
+            f"{self.prompt.system.format(lawsuit_type=lawsuit_type)}\n\n"
+            f"{DOCUMENT_SAFETY_INSTRUCTION}"
+        )
 
     async def build_user_prompt(self, state: object) -> str:
         document = state.document  # type: ignore[attr-defined]

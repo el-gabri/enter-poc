@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     # --- Storage ---
     data_dir: Path = Path("./data")
     vector_store: VectorStoreBackend = VectorStoreBackend.CHROMA
+    max_document_pages: int = Field(default=250, ge=1)
+    retain_uploads: bool = False
 
     # --- RAG ---
     chunk_target_chars: int = 1200

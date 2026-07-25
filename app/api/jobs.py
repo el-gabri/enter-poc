@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from fastapi import UploadFile
+
 from app.api.schemas import JobState, StageState, StageStatus
 from app.core.logging import get_logger
 from app.ingestion.service import DocumentIngestionService
@@ -24,16 +26,36 @@ from app.schemas.report import RunMetrics
 
 logger = get_logger(__name__)
 
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class UploadTooLargeError(ValueError):
+    """Raised when an upload exceeds the configured size limit."""
+
+
+class InvalidPdfUploadError(ValueError):
+    """Raised when an upload does not contain a PDF header."""
+
 # Ordered pipeline stages and the state predicate that marks each as done.
 STAGE_PREDICATES: list[tuple[str, str]] = [
     ("index", "chunks"),
     ("classify", "classification"),
     ("extract", "extraction"),
     ("analyze", "legal_analysis"),
+    ("enrich", "enrichment"),
     ("risk", "risk"),
     ("strategy", "strategy"),
     ("compose", "report"),
 ]
+
+ERROR_STAGE_BY_AGENT = {
+    "index": "index",
+    "classifier": "classify",
+    "entity_extraction": "extract",
+    "legal_analysis": "analyze",
+    "risk_assessment": "risk",
+    "strategy": "strategy",
+}
 
 
 @dataclass
@@ -42,6 +64,7 @@ class Job:
     filename: str
     state: JobState = JobState.QUEUED
     done_stages: set[str] = field(default_factory=set)
+    failed_stages: set[str] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: datetime | None = None
@@ -51,7 +74,9 @@ class Job:
         statuses: list[StageStatus] = []
         running_assigned = False
         for name, _ in STAGE_PREDICATES:
-            if name in self.done_stages:
+            if name in self.failed_stages:
+                state = StageState.FAILED
+            elif name in self.done_stages:
                 state = StageState.DONE
             elif self.state is JobState.RUNNING and not running_assigned:
                 state = StageState.RUNNING
@@ -71,6 +96,7 @@ class AnalysisJobManager:
         graph: object,
         run_store: RunStore,
         uploads_dir: Path,
+        retain_uploads: bool = False,
     ) -> None:
         self._ingestion = ingestion
         self._graph = graph
@@ -78,16 +104,37 @@ class AnalysisJobManager:
         self._uploads_dir = uploads_dir
         self._uploads_dir.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, Job] = {}
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._retain_uploads = retain_uploads
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
-    async def submit(self, filename: str, content: bytes) -> Job:
+    async def submit_upload(
+        self, filename: str, file: UploadFile, max_upload_bytes: int
+    ) -> Job:
+        """Persist an upload in bounded chunks, then queue its analysis.
+
+        The upload is intentionally written before a job is exposed. This
+        prevents arbitrary-sized requests from being materialized in memory
+        and ensures failed validation leaves no visible job behind.
+        """
         job = Job(job_id=uuid.uuid4().hex, filename=filename)
-        self._jobs[job.job_id] = job
         pdf_path = self._uploads_dir / f"{job.job_id}.pdf"
-        await asyncio.to_thread(pdf_path.write_bytes, content)
-        asyncio.create_task(self._execute(job, pdf_path))
+        try:
+            header = await _write_upload_in_chunks(
+                file=file, path=pdf_path, max_upload_bytes=max_upload_bytes
+            )
+            if not header.startswith(b"%PDF"):
+                raise InvalidPdfUploadError("File is not a valid PDF")
+        except Exception:
+            await asyncio.to_thread(pdf_path.unlink, missing_ok=True)
+            raise
+
+        self._jobs[job.job_id] = job
+        task = asyncio.create_task(self._execute(job, pdf_path))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         logger.info("job_submitted", job_id=job.job_id, filename=filename)
         return job
 
@@ -103,7 +150,10 @@ class AnalysisJobManager:
                 self._update_stages(job, last_state)
             job.result = last_state
             job.errors = list(last_state.errors) if last_state else ["no result"]
-            job.state = JobState.SUCCEEDED if not job.errors else JobState.FAILED
+            if last_state and last_state.report:
+                job.state = JobState.PARTIAL if job.errors else JobState.SUCCEEDED
+            else:
+                job.state = JobState.FAILED
         except Exception as exc:
             logger.exception("job_crashed", job_id=job.job_id)
             job.errors.append(f"{type(exc).__name__}: {exc}")
@@ -111,12 +161,18 @@ class AnalysisJobManager:
         finally:
             job.finished_at = datetime.now(timezone.utc)
             self._persist_run(job)
+            if not self._retain_uploads:
+                await asyncio.to_thread(pdf_path.unlink, missing_ok=True)
 
     def _update_stages(self, job: Job, state: AnalysisState) -> None:
         for stage_name, state_field in STAGE_PREDICATES:
             value = getattr(state, state_field)
             if value:
                 job.done_stages.add(stage_name)
+        for error in state.errors:
+            agent_name = error.split(":", maxsplit=1)[0]
+            if failed_stage := ERROR_STAGE_BY_AGENT.get(agent_name):
+                job.failed_stages.add(failed_stage)
 
     def _persist_run(self, job: Job) -> None:
         metrics = (
@@ -140,3 +196,24 @@ class AnalysisJobManager:
             )
         except Exception:
             logger.exception("run_persist_failed", job_id=job.job_id)
+
+
+async def _write_upload_in_chunks(
+    file: UploadFile, path: Path, max_upload_bytes: int
+) -> bytes:
+    """Write an UploadFile without ever holding more than one chunk in memory."""
+    total_bytes = 0
+    header = bytearray()
+    while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+        total_bytes += len(chunk)
+        if total_bytes > max_upload_bytes:
+            raise UploadTooLargeError(f"File exceeds {max_upload_bytes} bytes")
+        if len(header) < 4:
+            header.extend(chunk[: 4 - len(header)])
+        await asyncio.to_thread(_append_bytes, path, chunk)
+    return bytes(header)
+
+
+def _append_bytes(path: Path, chunk: bytes) -> None:
+    with path.open("ab") as destination:
+        destination.write(chunk)

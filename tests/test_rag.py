@@ -103,6 +103,30 @@ async def test_pipeline_indexes_and_retrieves_relevant_section() -> None:
     assert results[0].chunk.section == "DOS PEDIDOS"
 
 
+async def test_retrieve_many_batches_query_embeddings() -> None:
+    class RecordingEmbedder(MockEmbeddingClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[list[str]] = []
+
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            self.calls.append(texts)
+            return await super().embed(texts)
+
+    embedder = RecordingEmbedder()
+    pipeline = RagPipeline(embedder=embedder, store=InMemoryVectorStore(), default_k=2)
+    doc = _petition()
+    await pipeline.index_document(doc)
+    embedder.calls.clear()
+
+    results = await pipeline.retrieve_many(
+        ["danos morais", "restituicao em dobro"], doc_id=doc.doc_id
+    )
+
+    assert len(results) == 2
+    assert embedder.calls == [["danos morais", "restituicao em dobro"]]
+
+
 async def test_retrieval_is_isolated_per_document() -> None:
     pipeline = RagPipeline(
         embedder=MockEmbeddingClient(), store=InMemoryVectorStore(), default_k=5

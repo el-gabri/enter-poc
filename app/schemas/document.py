@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, computed_field
 class ExtractionMethod(str, Enum):
     NATIVE_TEXT = "native_text"
     OCR = "ocr"
+    HYBRID = "hybrid"
 
 
 class DocumentPage(BaseModel):

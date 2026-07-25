@@ -8,7 +8,6 @@ Run:
 """
 
 import os
-import time
 
 import requests
 import streamlit as st
@@ -21,31 +20,21 @@ STAGE_LABELS = {
     "classify": "Classificando a acao",
     "extract": "Extraindo dados estruturados",
     "analyze": "Analise juridica",
+    "enrich": "Validando no DataJud",
     "risk": "Avaliando riscos",
     "strategy": "Elaborando estrategia",
     "compose": "Montando relatorio",
 }
-RISK_COLORS = {"low": "#22c55e", "medium": "#eab308", "high": "#f97316", "critical": "#ef4444"}
 RISK_LABELS = {"low": "Baixo", "medium": "Medio", "high": "Alto", "critical": "Critico"}
-PRIORITY_ICONS = {"urgent": ":red[URGENTE]", "high": ":orange[Alta]", "medium": ":blue[Media]", "low": ":gray[Baixa]"}
+PRIORITY_ICONS = {
+    "urgent": ":red[URGENTE]",
+    "high": ":orange[Alta]",
+    "medium": ":blue[Media]",
+    "low": ":gray[Baixa]",
+}
 
 st.set_page_config(
-    page_title="AI Litigation Copilot", page_icon="⚖️", layout="wide"
-)
-
-st.markdown(
-    """
-    <style>
-    .block-container { padding-top: 2rem; }
-    div[data-testid="stMetricValue"] { font-size: 1.6rem; }
-    .risk-card {
-        border-left: 6px solid var(--risk-color);
-        border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem;
-        background: rgba(128,128,128,0.07);
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+    page_title="AI Litigation Copilot", page_icon=":material/balance:", layout="wide"
 )
 
 
@@ -70,12 +59,43 @@ def render_conclusion(conclusion: dict, key_prefix: str) -> None:
 
 
 def render_stages(stages: list[dict], container) -> None:
-    icons = {"done": "✅", "running": "⏳", "pending": "▫️"}
+    icons = {
+        "done": ":material/check_circle:",
+        "running": ":material/progress_activity:",
+        "pending": ":material/radio_button_unchecked:",
+        "failed": ":material/error:",
+    }
     lines = [
         f"{icons[s['state']]} {STAGE_LABELS.get(s['name'], s['name'])}"
         for s in stages
     ]
     container.markdown("\n\n".join(lines))
+
+
+@st.fragment(run_every=POLL_SECONDS)
+def poll_analysis(job_id: str) -> None:
+    """Refresh only job progress instead of blocking the whole Streamlit app."""
+    try:
+        status = api_get(f"/analyses/{job_id}").json()
+    except requests.RequestException as exc:
+        st.error(f"Falha ao acompanhar a analise: {exc}")
+        return
+
+    with st.container(border=True):
+        render_stages(status["stages"], st)
+
+    if status["state"] == "failed":
+        st.session_state["job_error"] = "; ".join(status["errors"])
+        st.rerun()
+    if status["state"] in ("succeeded", "partial"):
+        try:
+            response = api_get(f"/analyses/{job_id}/report")
+            response.raise_for_status()
+            st.session_state["report"] = response.json()
+            st.session_state.pop("job_error", None)
+        except requests.RequestException as exc:
+            st.session_state["job_error"] = f"Falha ao carregar relatorio: {exc}"
+        st.rerun()
 
 
 # ---------------------------------------------------------------- sidebar
@@ -110,35 +130,36 @@ with st.sidebar:
     )
 
 # ---------------------------------------------------------------- main
-st.title("Analise de Peticao Inicial")
-uploaded = st.file_uploader("Envie o PDF da peticao inicial", type=["pdf"])
-
-if uploaded and st.button("Analisar", type="primary", use_container_width=True):
-    response = requests.post(
-        f"{API_URL}/analyses",
-        files={"file": (uploaded.name, uploaded.getvalue(), "application/pdf")},
-        timeout=60,
+st.title("Analise de peticao inicial")
+with st.form("analysis_upload", border=False):
+    uploaded = st.file_uploader("Envie o PDF da peticao inicial", type=["pdf"])
+    submitted = st.form_submit_button(
+        "Analisar", type="primary", icon=":material/analytics:", width="stretch"
     )
-    if response.status_code != 202:
-        st.error(f"Falha no upload: {response.json().get('detail')}")
+
+if uploaded and submitted:
+    try:
+        response = requests.post(
+            f"{API_URL}/analyses",
+            files={"file": (uploaded.name, uploaded.getvalue(), "application/pdf")},
+            timeout=60,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        st.error(f"Falha no upload: {exc}")
         st.stop()
     st.session_state["job_id"] = response.json()["job_id"]
     st.session_state.pop("report", None)
+    st.session_state.pop("job_error", None)
 
 if job_id := st.session_state.get("job_id"):
     if "report" not in st.session_state:
         st.subheader("Pipeline de agentes")
-        stage_box = st.empty()
-        while True:
-            status = api_get(f"/analyses/{job_id}").json()
-            render_stages(status["stages"], stage_box)
-            if status["state"] in ("succeeded", "failed"):
-                break
-            time.sleep(POLL_SECONDS)
-        if status["state"] == "failed":
-            st.error("A analise falhou: " + "; ".join(status["errors"]))
+        if error := st.session_state.get("job_error"):
+            st.error("A analise falhou: " + error)
             st.stop()
-        st.session_state["report"] = api_get(f"/analyses/{job_id}/report").json()
+        poll_analysis(job_id)
+        st.stop()
 
     report = st.session_state["report"]
 
@@ -183,19 +204,14 @@ if job_id := st.session_state.get("job_id"):
             st.subheader(f"Nivel geral: {RISK_LABELS.get(level, level)}")
             render_conclusion(risk["overall"], "risk-overall")
             for i, item in enumerate(risk.get("risks", [])):
-                color = RISK_COLORS.get(item["level"], "#888")
-                st.markdown(
-                    f'<div class="risk-card" style="--risk-color:{color}">'
-                    f'<b>{item["title"]}</b> — risco {RISK_LABELS.get(item["level"])}'
-                    + (
-                        f'<br/>Exposicao: {item["financial_exposure"]}'
-                        if item.get("financial_exposure")
-                        else ""
+                with st.container(border=True):
+                    st.markdown(f"**{item['title']}**")
+                    st.caption(
+                        f"Risco: {RISK_LABELS.get(item['level'], item['level'])}"
                     )
-                    + "</div>",
-                    unsafe_allow_html=True,
-                )
-                render_conclusion(item["conclusion"], f"risk-{i}")
+                    if item.get("financial_exposure"):
+                        st.caption(f"Exposicao: {item['financial_exposure']}")
+                    render_conclusion(item["conclusion"], f"risk-{i}")
         else:
             st.info("Avaliacao de risco indisponivel nesta execucao.")
 
@@ -269,14 +285,14 @@ if job_id := st.session_state.get("job_id"):
         data=api_get(f"/analyses/{job_id}/report.md").text,
         file_name=f"relatorio_{doc_id}.md",
         mime="text/markdown",
-        use_container_width=True,
+        width="stretch",
     )
     col_pdf.download_button(
         "Baixar PDF",
         data=api_get(f"/analyses/{job_id}/report.pdf").content,
         file_name=f"relatorio_{doc_id}.pdf",
         mime="application/pdf",
-        use_container_width=True,
+        width="stretch",
     )
     col_docx.download_button(
         "Baixar DOCX",
@@ -284,12 +300,12 @@ if job_id := st.session_state.get("job_id"):
         file_name=f"relatorio_{doc_id}.docx",
         mime="application/vnd.openxmlformats-officedocument"
         ".wordprocessingml.document",
-        use_container_width=True,
+        width="stretch",
     )
     col_json.download_button(
         "Baixar JSON",
         data=json.dumps(report, ensure_ascii=False, indent=2),
         file_name=f"relatorio_{doc_id}.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )

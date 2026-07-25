@@ -17,7 +17,9 @@ class Citation(BaseModel):
     """Pointer to the source text that supports a conclusion."""
 
     quote: str = Field(description="Verbatim excerpt from the document")
-    page: int | None = Field(default=None, description="1-based page number")
+    page: int | None = Field(
+        default=None, ge=1, description="1-based page number"
+    )
     chunk_id: str | None = Field(
         default=None, description="RAG chunk id the quote was retrieved from"
     )

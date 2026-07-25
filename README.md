@@ -115,6 +115,16 @@ streamlit run frontend/streamlit_app.py           # terminal 2
 No API key? Set `LITIGATION_LLM_PROVIDER=mock` - the entire product runs
 offline with deterministic outputs (also how CI works).
 
+### Document handling
+
+Uploads are streamed with a 20 MB API limit and the ingestion layer rejects
+PDFs above `LITIGATION_MAX_DOCUMENT_PAGES` (250 by default). Raw uploaded
+PDFs are deleted after analysis by default; set `LITIGATION_RETAIN_UPLOADS=true`
+only when an explicit retention policy requires it. ChromaDB and run history
+remain persistent storage and should be protected with authentication,
+tenant isolation and an operational retention policy before real case data is
+used.
+
 ## Project structure
 
 ```

@@ -81,6 +81,24 @@ async def test_scanned_pdf_without_ocr_engine_warns(scanned_pdf: Path) -> None:
     assert len(doc.warnings) == 1
 
 
+async def test_hybrid_pdf_uses_ocr_only_for_scanned_pages(tmp_path: Path) -> None:
+    hybrid_pdf = _make_pdf(tmp_path / "hybrid.pdf", [PT_TEXT, ""])
+    service = DocumentIngestionService(ocr_engine=FakeOcr())
+
+    doc = await service.ingest(hybrid_pdf)
+
+    assert doc.extraction_method is ExtractionMethod.HYBRID
+    assert "danos" in doc.pages[0].text
+    assert doc.pages[1].text == "texto reconhecido via OCR"
+
+
+async def test_rejects_pdf_above_page_limit(text_pdf: Path) -> None:
+    service = DocumentIngestionService(max_pages=1)
+
+    with pytest.raises(ValueError, match="page limit"):
+        await service.ingest(text_pdf)
+
+
 def test_needs_ocr_heuristic(text_pdf: Path, scanned_pdf: Path) -> None:
     assert extract_text(text_pdf).needs_ocr is False
     assert extract_text(scanned_pdf).needs_ocr is True

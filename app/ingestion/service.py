@@ -25,14 +25,17 @@ logger = get_logger(__name__)
 class DocumentIngestionService:
     """Turns an uploaded PDF into a ParsedDocument ready for analysis."""
 
-    def __init__(self, ocr_engine: OcrEngine | None = None) -> None:
+    def __init__(
+        self, ocr_engine: OcrEngine | None = None, max_pages: int | None = None
+    ) -> None:
         self._ocr_engine = ocr_engine
+        self._max_pages = max_pages
 
     async def ingest(self, path: Path) -> ParsedDocument:
         return await asyncio.to_thread(self._ingest_sync, path)
 
     def _ingest_sync(self, path: Path) -> ParsedDocument:
-        extraction = pdf_reader.extract_text(path)
+        extraction = pdf_reader.extract_text(path, max_pages=self._max_pages)
         warnings: list[str] = []
         method = ExtractionMethod.NATIVE_TEXT
         ocr_applied = False
@@ -40,15 +43,32 @@ class DocumentIngestionService:
 
         if extraction.needs_ocr:
             if self._ocr_engine is not None:
-                logger.info("ocr_started", file=path.name, pages=len(page_texts))
-                images = pdf_reader.render_page_images(path)
-                page_texts = [self._ocr_engine.ocr_image(img) for img in images]
-                method = ExtractionMethod.OCR
-                ocr_applied = True
+                ocr_indexes = extraction.ocr_page_indexes
+                logger.info("ocr_started", file=path.name, pages=len(ocr_indexes))
+                images = pdf_reader.render_page_images(path, page_indexes=ocr_indexes)
+                successful_pages = 0
+                for index, image in zip(ocr_indexes, images, strict=True):
+                    try:
+                        page_texts[index] = self._ocr_engine.ocr_image(image)
+                        successful_pages += 1
+                    except Exception as exc:
+                        warnings.append(
+                            f"OCR failed on page {index + 1}; extracted text may be incomplete."
+                        )
+                        logger.warning(
+                            "ocr_page_failed", file=path.name, page=index + 1, error=str(exc)
+                        )
+                if successful_pages:
+                    method = (
+                        ExtractionMethod.OCR
+                        if successful_pages == len(page_texts)
+                        else ExtractionMethod.HYBRID
+                    )
+                    ocr_applied = True
             else:
                 warnings.append(
-                    "Document appears to be scanned but no OCR engine is "
-                    "available; extracted text is likely incomplete."
+                    f"{len(extraction.ocr_page_indexes)} page(s) appear to be scanned but "
+                    "no OCR engine is available; extracted text is likely incomplete."
                 )
                 logger.warning("ocr_needed_but_unavailable", file=path.name)
 

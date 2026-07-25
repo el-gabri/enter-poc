@@ -5,7 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response
 
-from app.api.jobs import AnalysisJobManager, Job
+from app.api.jobs import (
+    AnalysisJobManager,
+    InvalidPdfUploadError,
+    Job,
+    UploadTooLargeError,
+)
 from app.api.schemas import JobCreated, JobState, JobStatus
 from app.observability.store import RunStore
 from app.reporting.markdown import render_markdown
@@ -37,13 +42,16 @@ async def health() -> dict:
 async def create_analysis(file: UploadFile, manager: JobManagerDep) -> JobCreated:
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=422, detail="Only PDF files are accepted")
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
-    if not content.startswith(b"%PDF"):
-        raise HTTPException(status_code=422, detail="File is not a valid PDF")
-
-    job = await manager.submit(file.filename or "upload.pdf", content)
+    try:
+        job = await manager.submit_upload(
+            file.filename or "upload.pdf", file, max_upload_bytes=MAX_UPLOAD_BYTES
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail="File exceeds 20 MB limit") from exc
+    except InvalidPdfUploadError as exc:
+        raise HTTPException(status_code=422, detail="File is not a valid PDF") from exc
+    finally:
+        await file.close()
     return JobCreated(job_id=job.job_id, status_url=f"/analyses/{job.job_id}")
 
 

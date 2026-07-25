@@ -4,12 +4,14 @@ Topology:
 
     START -> index -> classify -> extract -> analyze -+-> risk -----+-> compose -> END
                          |            |          |     +-> strategy -+
-                         +----- on error: halt --+
+                         |            +-----------> enrich ------------+
+                         +----- failures are recorded, then compose ----+
 
 Risk and strategy are independent given the legal analysis, so they run in
 PARALLEL branches (the additive reducers on traces/errors make concurrent
-writes safe). Compose is deterministic (no LLM, see ADR 0007) and always
-runs, producing a partial report when a branch failed.
+writes safe). Compose is deterministic (no LLM, see ADR 0007) and runs for
+all agent failures, producing a visibly partial report. Only an indexing
+failure skips the dependent analysis nodes and goes straight to composition.
 
 Every agent node is wrapped so that failures are recorded in state
 (errors + a failed AgentTrace) instead of crashing the run.
@@ -58,8 +60,8 @@ def _agent_node(agent: BaseAgent, state_field: str) -> NodeFn:
     return node
 
 
-def _halt_on_error(state: AnalysisState) -> str:
-    return "halt" if state.errors else "continue"
+def _after_index(state: AnalysisState) -> str:
+    return "compose" if state.errors else "classify"
 
 
 def build_analysis_graph(
@@ -96,22 +98,16 @@ def build_analysis_graph(
     builder.add_node("compose", compose_node)
 
     builder.add_edge(START, "index")
-    for source, target in [("index", "classify"), ("classify", "extract")]:
-        builder.add_conditional_edges(
-            source, _halt_on_error, {"continue": target, "halt": END}
-        )
+    builder.add_conditional_edges(
+        "index", _after_index, {"classify": "classify", "compose": "compose"}
+    )
+    builder.add_edge("classify", "extract")
     # fan-out 1: legal analysis and DataJud enrichment are independent
-    builder.add_conditional_edges(
-        "extract",
-        lambda s: ["analyze", "enrich"] if not s.errors else "halt",
-        {"analyze": "analyze", "enrich": "enrich", "halt": END},
-    )
+    builder.add_edge("extract", "analyze")
+    builder.add_edge("extract", "enrich")
     # fan-out 2: risk and strategy run in parallel after the legal analysis
-    builder.add_conditional_edges(
-        "analyze",
-        lambda s: ["risk", "strategy"] if not s.errors else "halt",
-        {"risk": "risk", "strategy": "strategy", "halt": END},
-    )
+    builder.add_edge("analyze", "risk")
+    builder.add_edge("analyze", "strategy")
     # fan-in: compose waits for all branches; runs even on partial failure
     builder.add_edge(["risk", "strategy", "enrich"], "compose")
     builder.add_edge("compose", END)

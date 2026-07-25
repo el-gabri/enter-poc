@@ -37,10 +37,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run_store = RunStore(settings.data_dir / "runs.jsonl")
         app.state.run_store = run_store
         app.state.job_manager = AnalysisJobManager(
-            ingestion=DocumentIngestionService(ocr_engine=create_default_ocr_engine()),
+            ingestion=DocumentIngestionService(
+                ocr_engine=create_default_ocr_engine(), max_pages=settings.max_document_pages
+            ),
             graph=build_analysis_graph(llm, rag, create_datajud_client(settings)),
             run_store=run_store,
             uploads_dir=settings.uploads_dir,
+            retain_uploads=settings.retain_uploads,
         )
         yield
 

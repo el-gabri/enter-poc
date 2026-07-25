@@ -183,7 +183,7 @@ async def test_graph_runs_end_to_end() -> None:
     assert "classifier:v1.0" in report.metrics.prompt_versions
 
 
-async def test_graph_halts_on_agent_failure() -> None:
+async def test_graph_composes_partial_report_after_agent_failure() -> None:
     class ExplodingLLM(MockLLMClient):
         async def parse(self, **kwargs):  # type: ignore[override]
             raise RuntimeError("provider unavailable")
@@ -192,11 +192,10 @@ async def test_graph_halts_on_agent_failure() -> None:
     result = await graph.ainvoke(AnalysisState(document=_document()))
     state = AnalysisState(**result)
 
-    assert len(state.errors) == 1  # classifier failed...
+    assert state.errors
     assert state.errors[0].startswith("classifier:")
-    assert state.extraction is None  # ...and downstream agents never ran
-    assert state.legal_analysis is None
-    assert state.report is None  # compose never reached
+    assert state.report is not None
+    assert "relatorio parcial" in " ".join(state.report.warnings)
     assert state.traces[0].status is AgentStatus.FAILED
     assert state.traces[0].error is not None
 
