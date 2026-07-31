@@ -16,6 +16,7 @@ API_URL = os.getenv("LITIGATION_API_URL", "http://localhost:8000")
 POLL_SECONDS = 1.0
 
 STAGE_LABELS = {
+    "security_scan": "Verificando seguranca do documento",
     "index": "Indexando documento (RAG)",
     "classify": "Classificando a acao",
     "extract": "Extraindo dados estruturados",
@@ -31,6 +32,12 @@ PRIORITY_ICONS = {
     "high": ":orange[Alta]",
     "medium": ":blue[Media]",
     "low": ":gray[Baixa]",
+}
+SECURITY_ACTION_LABELS = {
+    "proceed": "Analise liberada",
+    "proceed_with_warning": "Analise liberada com aviso e mascaramento",
+    "human_review": "Analise interrompida para revisao humana",
+    "block": "Analise automatizada bloqueada",
 }
 
 st.set_page_config(
@@ -64,12 +71,60 @@ def render_stages(stages: list[dict], container) -> None:
         "running": ":material/progress_activity:",
         "pending": ":material/radio_button_unchecked:",
         "failed": ":material/error:",
+        "skipped": ":material/do_not_disturb_on:",
     }
     lines = [
         f"{icons[s['state']]} {STAGE_LABELS.get(s['name'], s['name'])}"
         for s in stages
     ]
     container.markdown("\n\n".join(lines))
+
+
+def render_security_assessment(report: dict) -> None:
+    assessment = report.get("security_assessment")
+    if not assessment:
+        return
+
+    level = assessment["risk_level"]
+    action = SECURITY_ACTION_LABELS.get(
+        assessment["recommended_action"], assessment["recommended_action"]
+    )
+    count = len(assessment.get("findings", []))
+    message = (
+        f"Seguranca do documento: risco {RISK_LABELS.get(level, level)}. "
+        f"{action}. {count} achado(s)."
+    )
+    if not assessment.get("scan_complete", True) or level in ("high", "critical"):
+        st.error(message, icon=":material/gpp_bad:")
+    elif level == "medium":
+        st.warning(message, icon=":material/warning:")
+    elif assessment.get("detected"):
+        st.info(message, icon=":material/shield:")
+    else:
+        st.success(
+            "Varredura de prompt injection concluida sem achados.",
+            icon=":material/verified_user:",
+        )
+
+    if findings := assessment.get("findings"):
+        with st.expander("Ver achados de seguranca", expanded=level in ("high", "critical")):
+            for finding in findings:
+                with st.container(border=True):
+                    pages = (
+                        f"Paginas {finding['page']}-{finding['page_end']}"
+                        if finding.get("page_end")
+                        and finding["page_end"] != finding["page"]
+                        else f"Pagina {finding['page']}"
+                    )
+                    st.markdown(
+                        f"**{pages} · "
+                        f"{finding['category']} · risco {finding['severity']}**"
+                    )
+                    st.code(finding["quote"], language=None, wrap_lines=True)
+                    st.caption(
+                        f"{finding['reasoning']} · detector {finding['source']} · "
+                        f"confianca {round(finding['confidence'] * 100)}%"
+                    )
 
 
 @st.fragment(run_every=POLL_SECONDS)
@@ -87,7 +142,12 @@ def poll_analysis(job_id: str) -> None:
     if status["state"] == "failed":
         st.session_state["job_error"] = "; ".join(status["errors"])
         st.rerun()
-    if status["state"] in ("succeeded", "partial"):
+    if status["state"] in (
+        "succeeded",
+        "partial",
+        "review_required",
+        "blocked",
+    ):
         try:
             response = api_get(f"/analyses/{job_id}/report")
             response.raise_for_status()
@@ -112,7 +172,14 @@ with st.sidebar:
         if totals["runs"]:
             with st.expander("Historico de execucoes"):
                 for run in api_get("/runs").json():
-                    status = "✅" if run["success"] else "❌"
+                    outcome = run.get("outcome") or (
+                        "succeeded" if run["success"] else "failed"
+                    )
+                    status = {
+                        "succeeded": "✅",
+                        "blocked": "🛡️",
+                        "review_required": "⚠️",
+                    }.get(outcome, "❌")
                     st.caption(
                         f"{status} {run['filename']} · "
                         f"{run['metrics']['total_tokens']} tokens · "
@@ -165,6 +232,7 @@ if job_id := st.session_state.get("job_id"):
 
     # ------------------------------------------------ header metrics
     st.divider()
+    render_security_assessment(report)
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Confianca agregada", f"{round(report['confidence_level'] * 100)}%")
     lawsuit_type = (report.get("classification") or {}).get("lawsuit_type", "-")
@@ -173,7 +241,8 @@ if job_id := st.session_state.get("job_id"):
     col4.metric("Tokens", report["metrics"]["total_tokens"])
 
     for warning in report.get("warnings", []):
-        st.warning(warning)
+        if not warning.startswith("Seguranca:"):
+            st.warning(warning)
 
     # ------------------------------------------------ tabs
     tab_summary, tab_risk, tab_strategy, tab_details, tab_ai = st.tabs(

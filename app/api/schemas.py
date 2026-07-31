@@ -11,6 +11,8 @@ class JobState(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
+    REVIEW_REQUIRED = "review_required"
+    BLOCKED = "blocked"
     FAILED = "failed"
 
 
@@ -19,6 +21,7 @@ class StageState(str, Enum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 class StageStatus(BaseModel):

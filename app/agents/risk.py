@@ -37,7 +37,11 @@ class RiskAssessmentAgent(BaseAgent[RiskAssessment]):
         analysis = state.legal_analysis  # type: ignore[attr-defined]
         return self.prompt.render_user(
             language=document.language,
-            context=format_context(document, retrieved),
+            context=format_context(
+                document,
+                retrieved,
+                security_assessment=getattr(state, "security_assessment", None),
+            ),
             extraction_json=_dump(extraction),
             analysis_json=_dump(analysis),
         )

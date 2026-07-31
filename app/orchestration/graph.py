@@ -2,16 +2,17 @@
 
 Topology:
 
-    START -> index -> classify -> extract -> analyze -+-> risk -----+-> compose -> END
-                         |            |          |     +-> strategy -+
-                         |            +-----------> enrich ------------+
-                         +----- failures are recorded, then compose ----+
+    START -> security_scan -+-> index -> classify -> extract -> analyze -+-> risk ---+
+                            |                         |          +-> strategy --+-> compose
+                            |                         +-> enrich ---------------+
+                            +-> security_compose -> END
 
 Risk and strategy are independent given the legal analysis, so they run in
 PARALLEL branches (the additive reducers on traces/errors make concurrent
 writes safe). Compose is deterministic (no LLM, see ADR 0007) and runs for
-all agent failures, producing a visibly partial report. Only an indexing
-failure skips the dependent analysis nodes and goes straight to composition.
+all agent failures, producing a visibly partial report. High-risk prompt
+injection, an incomplete scan, or an indexing failure skips the dependent
+analysis nodes and goes straight to composition.
 
 Every agent node is wrapped so that failures are recorded in state
 (errors + a failed AgentTrace) instead of crashing the run.
@@ -34,6 +35,11 @@ from app.enrichment.node import make_enrich_node
 from app.llm.base import LLMClient
 from app.orchestration.state import AnalysisState
 from app.rag.pipeline import RagPipeline
+from app.schemas.trace import AgentStatus, AgentTrace
+from app.security.prompt_injection import (
+    PromptInjectionDetector,
+    failed_scan_assessment,
+)
 from app.services.composer import compose_report
 
 logger = get_logger(__name__)
@@ -64,14 +70,66 @@ def _after_index(state: AnalysisState) -> str:
     return "compose" if state.errors else "classify"
 
 
+def _after_security_scan(state: AnalysisState) -> str:
+    assessment = state.security_assessment
+    if assessment is None:
+        return "security_compose"
+    return (
+        "index"
+        if assessment.recommended_action.allows_automated_analysis
+        else "security_compose"
+    )
+
+
 def build_analysis_graph(
-    llm: LLMClient, rag: RagPipeline, datajud: DataJudClient | None = None
+    llm: LLMClient,
+    rag: RagPipeline,
+    datajud: DataJudClient | None = None,
+    prompt_injection_detector: PromptInjectionDetector | None = None,
 ):
     """Compose the analysis pipeline. Dependencies injected at the root."""
 
+    detector = prompt_injection_detector or PromptInjectionDetector(llm)
+
+    async def security_scan_node(state: AnalysisState) -> dict:
+        start = time.perf_counter()
+        try:
+            assessment, trace = await detector.scan(state.document)
+            result: dict = {
+                "security_assessment": assessment,
+                "traces": [trace],
+            }
+            if not assessment.scan_complete:
+                result["errors"] = [
+                    "security_scan: required security review was not completed"
+                ]
+            return result
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.exception("prompt_injection_scan_failed", doc_id=state.document.doc_id)
+            assessment = failed_scan_assessment(
+                document=state.document,
+                scan_mode=detector.mode,
+                error=exc,
+            )
+            return {
+                "security_assessment": assessment,
+                "errors": [f"security_scan: {type(exc).__name__}: {exc}"],
+                "traces": [
+                    AgentTrace(
+                        agent=detector.name,
+                        status=AgentStatus.FAILED,
+                        duration_ms=duration_ms,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                ],
+            }
+
     async def index_node(state: AnalysisState) -> dict:
         try:
-            chunks = await rag.index_document(state.document)
+            chunks = await rag.index_document(
+                state.document, state.security_assessment
+            )
             return {"chunks": chunks}
         except Exception as exc:
             logger.exception("indexing_failed", doc_id=state.document.doc_id)
@@ -88,6 +146,7 @@ def build_analysis_graph(
     strategist = StrategyAgent(llm, rag)
 
     builder = StateGraph(AnalysisState)
+    builder.add_node("security_scan", security_scan_node)
     builder.add_node("index", index_node)
     builder.add_node("classify", _agent_node(classifier, "classification"))
     builder.add_node("extract", _agent_node(extractor, "extraction"))
@@ -96,8 +155,15 @@ def build_analysis_graph(
     builder.add_node("strategy", _agent_node(strategist, "strategy"))
     builder.add_node("enrich", make_enrich_node(datajud))
     builder.add_node("compose", compose_node)
+    builder.add_node("security_compose", compose_node)
 
-    builder.add_edge(START, "index")
+    builder.add_edge(START, "security_scan")
+    builder.add_conditional_edges(
+        "security_scan",
+        _after_security_scan,
+        {"index": "index", "security_compose": "security_compose"},
+    )
+    builder.add_edge("security_compose", END)
     builder.add_conditional_edges(
         "index", _after_index, {"classify": "classify", "compose": "compose"}
     )

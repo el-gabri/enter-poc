@@ -10,6 +10,13 @@ from app.schemas.lawsuit import (
     Party,
     PartyRole,
 )
+from app.schemas.security import (
+    InjectionCategory,
+    PromptInjectionAssessment,
+    PromptInjectionFinding,
+    SecurityAction,
+    SecurityRiskLevel,
+)
 
 __all__ = [
     "Citation",
@@ -23,4 +30,9 @@ __all__ = [
     "ParsedDocument",
     "Party",
     "PartyRole",
+    "InjectionCategory",
+    "PromptInjectionAssessment",
+    "PromptInjectionFinding",
+    "SecurityAction",
+    "SecurityRiskLevel",
 ]

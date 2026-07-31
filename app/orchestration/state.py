@@ -16,6 +16,7 @@ from app.schemas.lawsuit import LawsuitExtraction
 from app.schemas.rag import Chunk
 from app.schemas.report import LitigationReport
 from app.schemas.risk import RiskAssessment
+from app.schemas.security import PromptInjectionAssessment
 from app.schemas.strategy import StrategyPlan
 from app.schemas.trace import AgentTrace
 
@@ -26,6 +27,7 @@ class AnalysisState(BaseModel):
     document: ParsedDocument
 
     # Filled by the graph as it advances
+    security_assessment: PromptInjectionAssessment | None = None
     chunks: list[Chunk] = Field(default_factory=list)
     classification: LawsuitClassification | None = None
     extraction: LawsuitExtraction | None = None

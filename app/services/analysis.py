@@ -16,6 +16,7 @@ from app.llm.factory import create_llm_client
 from app.orchestration.graph import build_analysis_graph
 from app.orchestration.state import AnalysisState
 from app.rag.factory import create_rag_pipeline
+from app.security import PromptInjectionDetector
 
 
 def create_datajud_client(settings: Settings) -> DataJudClient | None:
@@ -58,5 +59,16 @@ def create_analysis_service(settings: Settings) -> LawsuitAnalysisService:
     rag = create_rag_pipeline(settings)
     datajud = create_datajud_client(settings)
     return LawsuitAnalysisService(
-        ingestion=ingestion, graph=build_analysis_graph(llm, rag, datajud)
+        ingestion=ingestion,
+        graph=build_analysis_graph(
+            llm,
+            rag,
+            datajud,
+            prompt_injection_detector=PromptInjectionDetector(
+                llm,
+                mode=settings.prompt_injection_scan_mode,
+                strict_max_chars=settings.prompt_injection_strict_max_chars,
+                strict_max_batches=settings.prompt_injection_strict_max_batches,
+            ),
+        ),
     )

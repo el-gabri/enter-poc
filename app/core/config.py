@@ -28,6 +28,14 @@ class VectorStoreBackend(str, Enum):
     MEMORY = "memory"
 
 
+class PromptInjectionScanMode(str, Enum):
+    """How the pre-analysis document security gate reviews suspicious text."""
+
+    RULES = "rules"
+    BALANCED = "balanced"
+    STRICT = "strict"
+
+
 class Settings(BaseSettings):
     """Runtime configuration for the whole application."""
 
@@ -54,6 +62,15 @@ class Settings(BaseSettings):
     chunk_target_chars: int = 1200
     chunk_overlap_chars: int = 150
     retrieval_k: int = 6
+
+    # --- Document security ---
+    # Every mode applies deterministic bilingual rules to every page. Balanced
+    # reviews suspicious candidates; strict semantically reviews all page text.
+    prompt_injection_scan_mode: PromptInjectionScanMode = (
+        PromptInjectionScanMode.BALANCED
+    )
+    prompt_injection_strict_max_chars: int = Field(default=500_000, ge=1)
+    prompt_injection_strict_max_batches: int = Field(default=64, ge=1)
 
     # --- DataJud (CNJ public API) ---
     # The key is published openly by CNJ at

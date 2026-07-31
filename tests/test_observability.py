@@ -36,3 +36,19 @@ def test_empty_store(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.jsonl")
     assert store.list_runs() == []
     assert store.totals()["runs"] == 0
+
+
+def test_security_outcomes_are_not_counted_as_successes_or_failures(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs.jsonl")
+    store.append(_record("blocked", 0.0).model_copy(update={"outcome": "blocked"}))
+    store.append(
+        _record("review", 0.0).model_copy(update={"outcome": "review_required"})
+    )
+
+    totals = store.totals()
+
+    assert totals["blocked"] == 1
+    assert totals["review_required"] == 1
+    assert totals["failures"] == 0

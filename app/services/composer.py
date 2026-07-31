@@ -10,6 +10,7 @@ schema itself.
 
 from app.schemas.common import ConfidentConclusion
 from app.schemas.report import LitigationReport, RunMetrics
+from app.schemas.security import PromptInjectionAssessment, SecurityRiskLevel
 from app.schemas.trace import AgentStatus, AgentTrace
 from app.services.citations import validate_report_citations
 
@@ -22,6 +23,7 @@ def compose_report(state: object) -> LitigationReport:
     analysis = state.legal_analysis  # type: ignore[attr-defined]
     risk = state.risk  # type: ignore[attr-defined]
     strategy = state.strategy  # type: ignore[attr-defined]
+    security_assessment = getattr(state, "security_assessment", None)
     traces: list[AgentTrace] = state.traces  # type: ignore[attr-defined]
 
     conclusions = _collect_conclusions(classification, analysis, risk, strategy)
@@ -41,10 +43,15 @@ def compose_report(state: object) -> LitigationReport:
         legal_risks=risk,
         suggested_strategy=strategy,
         possible_settlement=strategy.settlement if strategy else None,
+        security_assessment=security_assessment,
         datajud=getattr(state, "enrichment", None),
         confidence_level=_aggregate_confidence(conclusions),
         ai_reasoning=_build_ai_reasoning(state, traces),
-        warnings=[*document.warnings, *_error_warnings(state)],
+        warnings=[
+            *document.warnings,
+            *_security_warnings(security_assessment),
+            *_error_warnings(state),
+        ],
         metrics=_build_metrics(traces),
         traces=traces,
     )
@@ -129,21 +136,78 @@ def _error_warnings(state: object) -> list[str]:
     ]
 
 
+def _security_warnings(
+    assessment: PromptInjectionAssessment | None,
+) -> list[str]:
+    if assessment is None:
+        return []
+    warnings = list(assessment.warnings)
+    if not assessment.detected:
+        return warnings
+    count = len(assessment.findings)
+    if assessment.risk_level is SecurityRiskLevel.MEDIUM:
+        warnings.append(
+            f"Seguranca: {count} trecho(s) suspeito(s) foram removidos do contexto "
+            "dos agentes; revise os achados."
+        )
+    elif assessment.risk_level is SecurityRiskLevel.HIGH:
+        warnings.append(
+            f"Seguranca: {count} tentativa(s) de prompt injection de alto risco "
+            "foram detectadas. A analise juridica automatizada foi interrompida "
+            "para revisao humana."
+        )
+    elif assessment.risk_level is SecurityRiskLevel.CRITICAL:
+        warnings.append(
+            f"Seguranca: {count} tentativa(s) critica(s) de prompt injection foram "
+            "detectadas. A analise juridica automatizada foi bloqueada."
+        )
+    else:
+        warnings.append(
+            f"Seguranca: {count} trecho(s) potencialmente suspeito(s) foram sinalizados."
+        )
+    return warnings
+
+
 def _build_ai_reasoning(state: object, traces: list[AgentTrace]) -> str:
     """Human-readable account of HOW the analysis was produced."""
     document = state.document  # type: ignore[attr-defined]
     chunks = state.chunks  # type: ignore[attr-defined]
+    security_assessment = getattr(state, "security_assessment", None)
     lines = [
         "Como esta analise foi produzida:",
         f"1. O documento '{document.filename}' ({document.page_count} paginas, "
         f"idioma '{document.language}', extracao "
-        f"{document.extraction_method.value}) foi dividido em "
-        f"{len(chunks)} trechos indexados por secao.",
-        "2. Agentes especializados analisaram o documento em sequencia, cada "
-        "um recuperando apenas os trechos relevantes para sua tarefa "
-        "(RAG), citando as fontes usadas em cada conclusao.",
+        f"{document.extraction_method.value}) foi recebido para analise.",
     ]
-    for i, trace in enumerate(traces, start=3):
+    next_step = 2
+    if security_assessment is not None:
+        lines.append(
+            f"{next_step}. A varredura de prompt injection examinou "
+            f"{security_assessment.scanned_pages} pagina(s): risco "
+            f"'{security_assessment.risk_level.value}', acao "
+            f"'{security_assessment.recommended_action.value}'."
+        )
+        next_step += 1
+    if chunks:
+        lines.extend(
+            [
+                f"{next_step}. O documento foi dividido em {len(chunks)} trechos "
+                "indexados por secao.",
+                f"{next_step + 1}. Agentes especializados analisaram o documento, "
+                "cada um recuperando apenas os trechos relevantes para sua tarefa "
+                "(RAG), com os achados de seguranca removidos do contexto.",
+            ]
+        )
+        next_step += 2
+    elif security_assessment is not None and not (
+        security_assessment.recommended_action.allows_automated_analysis
+    ):
+        lines.append(
+            f"{next_step}. A analise juridica automatizada foi interrompida antes "
+            "da indexacao; o documento original foi preservado para revisao humana."
+        )
+        next_step += 1
+    for i, trace in enumerate(traces, start=next_step):
         if trace.llm_meta is None:
             lines.append(
                 f"{i}. Agente '{trace.agent}': {trace.status.value}"

@@ -34,7 +34,11 @@ class StrategyAgent(BaseAgent[StrategyPlan]):
         )
         return self.prompt.render_user(
             language=document.language,
-            context=format_context(document, retrieved),
+            context=format_context(
+                document,
+                retrieved,
+                security_assessment=getattr(state, "security_assessment", None),
+            ),
             extraction_json=_dump(state.extraction),  # type: ignore[attr-defined]
             analysis_json=_dump(state.legal_analysis),  # type: ignore[attr-defined]
         )

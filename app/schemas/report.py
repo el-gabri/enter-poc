@@ -13,6 +13,7 @@ from app.schemas.common import ConfidentConclusion
 from app.schemas.enrichment import DataJudEnrichment
 from app.schemas.lawsuit import LawsuitExtraction
 from app.schemas.risk import RiskAssessment
+from app.schemas.security import PromptInjectionAssessment
 from app.schemas.strategy import StrategyPlan
 from app.schemas.trace import AgentTrace
 
@@ -50,6 +51,10 @@ class LitigationReport(BaseModel):
     legal_risks: RiskAssessment | None = None
     suggested_strategy: StrategyPlan | None = None
     possible_settlement: ConfidentConclusion | None = None
+    security_assessment: PromptInjectionAssessment | None = Field(
+        default=None,
+        description="Pre-analysis prompt-injection security assessment",
+    )
     datajud: DataJudEnrichment | None = Field(
         default=None, description="Validation against official CNJ court records"
     )

@@ -40,3 +40,18 @@ def test_partial_job_exposes_failed_stage_without_hiding_completed_work() -> Non
     assert states["index"] is StageState.DONE
     assert states["classify"] is StageState.FAILED
     assert states["compose"] is StageState.DONE
+
+
+def test_security_block_exposes_downstream_stages_as_skipped() -> None:
+    job = Job(job_id="job", filename="x.pdf", state=JobState.SUCCEEDED)
+    job.done_stages.update({"security_scan", "compose"})
+    job.skipped_stages.update(
+        {"index", "classify", "extract", "analyze", "enrich", "risk", "strategy"}
+    )
+
+    states = {stage.name: stage.state for stage in job.stages()}
+
+    assert states["security_scan"] is StageState.DONE
+    assert states["index"] is StageState.SKIPPED
+    assert states["strategy"] is StageState.SKIPPED
+    assert states["compose"] is StageState.DONE

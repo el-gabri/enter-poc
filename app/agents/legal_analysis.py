@@ -42,5 +42,9 @@ class LegalAnalysisAgent(BaseAgent[LegalAnalysis]):
         retrieved = await retrieve_for_queries(
             self._rag, doc_id=document.doc_id, queries=ANALYSIS_QUERIES, k=5
         )
-        context = format_context(document, retrieved)
+        context = format_context(
+            document,
+            retrieved,
+            security_assessment=getattr(state, "security_assessment", None),
+        )
         return self.prompt.render_user(language=document.language, context=context)

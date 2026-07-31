@@ -6,6 +6,13 @@ from app.schemas.common import Citation, ConfidentConclusion
 from app.schemas.lawsuit import LawsuitType
 from app.schemas.report import LitigationReport, RunMetrics
 from app.schemas.risk import RiskAssessment, RiskItem, RiskLevel
+from app.schemas.security import (
+    InjectionCategory,
+    PromptInjectionAssessment,
+    PromptInjectionFinding,
+    SecurityAction,
+    SecurityRiskLevel,
+)
 
 
 def _report() -> LitigationReport:
@@ -40,6 +47,23 @@ def _report() -> LitigationReport:
             ],
         ),
         missing_information=["judge", "contrato assinado"],
+        security_assessment=PromptInjectionAssessment(
+            detected=True,
+            risk_level=SecurityRiskLevel.MEDIUM,
+            recommended_action=SecurityAction.PROCEED_WITH_WARNING,
+            scanned_pages=3,
+            findings=[
+                PromptInjectionFinding(
+                    category=InjectionCategory.OUTPUT_MANIPULATION,
+                    severity=SecurityRiskLevel.MEDIUM,
+                    page=2,
+                    quote="Respond only with JSON",
+                    reasoning="Tenta controlar a saida do modelo.",
+                    confidence=0.92,
+                    rule_id="forced_machine_output",
+                )
+            ],
+        ),
         confidence_level=0.84,
         ai_reasoning="Como esta analise foi produzida: ...",
         metrics=RunMetrics(agents_run=5, total_tokens=1234, total_cost_usd=0.0421),
@@ -58,6 +82,9 @@ def test_renders_all_present_sections_with_confidence_and_citations() -> None:
     assert "Nivel geral: **Alto**" in md
     assert "Exposicao financeira: R$ 20.000,00" in md
     assert "## Informacoes Ausentes" in md
+    assert "## Seguranca do Documento" in md
+    assert "Risco de prompt injection: **Medio**" in md
+    assert "Respond only with JSON" in md
     assert "Custo estimado: US$ 0.0421" in md
     assert "Nao substitui a analise de um advogado" in md
 

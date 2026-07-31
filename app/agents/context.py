@@ -7,10 +7,13 @@ in the block so the LLM can produce verifiable citations.
 """
 
 from collections.abc import Iterable
+from html import escape
 
 from app.rag.pipeline import RagPipeline
 from app.schemas.document import ParsedDocument
 from app.schemas.rag import RetrievedChunk
+from app.schemas.security import PromptInjectionAssessment
+from app.security.sanitization import mask_flagged_text
 
 MAX_CONTEXT_CHARS = 12_000
 DOC_HEAD_CHARS = 2_500
@@ -33,21 +36,31 @@ def format_context(
     document: ParsedDocument,
     retrieved: list[RetrievedChunk],
     max_chars: int = MAX_CONTEXT_CHARS,
+    security_assessment: PromptInjectionAssessment | None = None,
 ) -> str:
     """Build the context block: document head + cited retrieval results."""
-    first_page_text = document.pages[0].text[:DOC_HEAD_CHARS] if document.pages else ""
+    first_page_text = document.pages[0].text if document.pages else ""
+    first_page_text = mask_flagged_text(first_page_text, security_assessment)[
+        :DOC_HEAD_CHARS
+    ]
+    source = document.doc_id
     parts: list[str] = [
-        f"<document_excerpt source=\"{document.filename}\" page=\"1\">\n"
+        f"<document_excerpt source=\"{source}\" page=\"1\">\n"
         f"{first_page_text}\n"
         "</document_excerpt>"
     ]
     used = len(parts[0])
     for item in retrieved:
         chunk = item.chunk
-        section = chunk.section or "sem secao"
+        chunk_id = escape(chunk.chunk_id, quote=True)
+        raw_section = mask_flagged_text(
+            chunk.section or "sem secao", security_assessment
+        )
+        section = escape(raw_section, quote=True)
+        chunk_text = mask_flagged_text(chunk.text, security_assessment)
         block = (
-            f"<document_excerpt chunk_id=\"{chunk.chunk_id}\" section=\"{section}\" "
-            f"pages=\"{chunk.page_start}-{chunk.page_end}\">\n{chunk.text}\n"
+            f"<document_excerpt chunk_id=\"{chunk_id}\" section=\"{section}\" "
+            f"pages=\"{chunk.page_start}-{chunk.page_end}\">\n{chunk_text}\n"
             "</document_excerpt>"
         )
         if used + len(block) > max_chars:

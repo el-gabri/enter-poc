@@ -23,6 +23,7 @@ class RunRecord(BaseModel):
     filename: str
     finished_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     success: bool
+    outcome: str | None = None
     errors: list[str] = Field(default_factory=list)
     metrics: RunMetrics
     traces: list[AgentTrace] = Field(default_factory=list)
@@ -49,9 +50,16 @@ class RunStore:
     def totals(self) -> dict:
         """Aggregate cost/token totals across all runs."""
         runs = self.list_runs(limit=10_000)
+        outcomes = [
+            run.outcome or ("succeeded" if run.success else "failed") for run in runs
+        ]
         return {
             "runs": len(runs),
             "total_cost_usd": round(sum(r.metrics.total_cost_usd for r in runs), 6),
             "total_tokens": sum(r.metrics.total_tokens for r in runs),
-            "failures": sum(1 for r in runs if not r.success),
+            "failures": sum(
+                outcome in {"failed", "partial"} for outcome in outcomes
+            ),
+            "blocked": outcomes.count("blocked"),
+            "review_required": outcomes.count("review_required"),
         }

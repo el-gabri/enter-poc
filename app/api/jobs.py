@@ -23,6 +23,7 @@ from app.ingestion.service import DocumentIngestionService
 from app.observability.store import RunRecord, RunStore
 from app.orchestration.state import AnalysisState
 from app.schemas.report import RunMetrics
+from app.schemas.security import SecurityAction
 
 logger = get_logger(__name__)
 
@@ -38,6 +39,7 @@ class InvalidPdfUploadError(ValueError):
 
 # Ordered pipeline stages and the state predicate that marks each as done.
 STAGE_PREDICATES: list[tuple[str, str]] = [
+    ("security_scan", "security_assessment"),
     ("index", "chunks"),
     ("classify", "classification"),
     ("extract", "extraction"),
@@ -49,12 +51,23 @@ STAGE_PREDICATES: list[tuple[str, str]] = [
 ]
 
 ERROR_STAGE_BY_AGENT = {
+    "security_scan": "security_scan",
     "index": "index",
     "classifier": "classify",
     "entity_extraction": "extract",
     "legal_analysis": "analyze",
     "risk_assessment": "risk",
     "strategy": "strategy",
+}
+
+SECURITY_SKIPPED_STAGES = {
+    "index",
+    "classify",
+    "extract",
+    "analyze",
+    "enrich",
+    "risk",
+    "strategy",
 }
 
 
@@ -65,6 +78,7 @@ class Job:
     state: JobState = JobState.QUEUED
     done_stages: set[str] = field(default_factory=set)
     failed_stages: set[str] = field(default_factory=set)
+    skipped_stages: set[str] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: datetime | None = None
@@ -78,6 +92,8 @@ class Job:
                 state = StageState.FAILED
             elif name in self.done_stages:
                 state = StageState.DONE
+            elif name in self.skipped_stages:
+                state = StageState.SKIPPED
             elif self.state is JobState.RUNNING and not running_assigned:
                 state = StageState.RUNNING
                 running_assigned = True
@@ -151,7 +167,23 @@ class AnalysisJobManager:
             job.result = last_state
             job.errors = list(last_state.errors) if last_state else ["no result"]
             if last_state and last_state.report:
-                job.state = JobState.PARTIAL if job.errors else JobState.SUCCEEDED
+                assessment = last_state.security_assessment
+                if (
+                    assessment is not None
+                    and assessment.scan_complete
+                    and assessment.recommended_action is SecurityAction.HUMAN_REVIEW
+                ):
+                    job.state = JobState.REVIEW_REQUIRED
+                elif (
+                    assessment is not None
+                    and assessment.scan_complete
+                    and assessment.recommended_action is SecurityAction.BLOCK
+                ):
+                    job.state = JobState.BLOCKED
+                else:
+                    job.state = (
+                        JobState.PARTIAL if job.errors else JobState.SUCCEEDED
+                    )
             else:
                 job.state = JobState.FAILED
         except Exception as exc:
@@ -169,6 +201,13 @@ class AnalysisJobManager:
             value = getattr(state, state_field)
             if value:
                 job.done_stages.add(stage_name)
+        assessment = state.security_assessment
+        if (
+            state.report
+            and assessment is not None
+            and not assessment.recommended_action.allows_automated_analysis
+        ):
+            job.skipped_stages.update(SECURITY_SKIPPED_STAGES)
         for error in state.errors:
             agent_name = error.split(":", maxsplit=1)[0]
             if failed_stage := ERROR_STAGE_BY_AGENT.get(agent_name):
@@ -189,6 +228,7 @@ class AnalysisJobManager:
                     doc_id=doc_id,
                     filename=job.filename,
                     success=job.state is JobState.SUCCEEDED,
+                    outcome=job.state.value,
                     errors=job.errors,
                     metrics=metrics,
                     traces=traces,

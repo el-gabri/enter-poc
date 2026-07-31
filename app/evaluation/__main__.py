@@ -17,6 +17,7 @@ from app.evaluation.runner import EvaluationRunner
 from app.llm.factory import create_llm_client
 from app.orchestration.graph import build_analysis_graph
 from app.rag.factory import create_rag_pipeline
+from app.security import PromptInjectionDetector
 
 
 async def main() -> None:
@@ -25,7 +26,16 @@ async def main() -> None:
     golden_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("eval_data")
 
     llm = create_llm_client(settings)
-    graph = build_analysis_graph(llm, create_rag_pipeline(settings))
+    graph = build_analysis_graph(
+        llm,
+        create_rag_pipeline(settings),
+        prompt_injection_detector=PromptInjectionDetector(
+            llm,
+            mode=settings.prompt_injection_scan_mode,
+            strict_max_chars=settings.prompt_injection_strict_max_chars,
+            strict_max_batches=settings.prompt_injection_strict_max_batches,
+        ),
+    )
     judge_llm = llm if settings.llm_provider is not LLMProvider.MOCK else None
 
     runner = EvaluationRunner(graph, judge_llm=judge_llm)

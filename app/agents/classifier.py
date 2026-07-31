@@ -23,5 +23,9 @@ class ClassifierAgent(BaseAgent[LawsuitClassification]):
 
     async def build_user_prompt(self, state: object) -> str:
         document = state.document  # type: ignore[attr-defined]
-        context = format_context(document, retrieved=[])
+        context = format_context(
+            document,
+            retrieved=[],
+            security_assessment=getattr(state, "security_assessment", None),
+        )
         return self.prompt.render_user(language=document.language, context=context)

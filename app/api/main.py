@@ -23,6 +23,7 @@ from app.llm.factory import create_llm_client
 from app.observability.store import RunStore
 from app.orchestration.graph import build_analysis_graph
 from app.rag.factory import create_rag_pipeline
+from app.security import PromptInjectionDetector
 from app.services.analysis import create_datajud_client
 
 
@@ -40,7 +41,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ingestion=DocumentIngestionService(
                 ocr_engine=create_default_ocr_engine(), max_pages=settings.max_document_pages
             ),
-            graph=build_analysis_graph(llm, rag, create_datajud_client(settings)),
+            graph=build_analysis_graph(
+                llm,
+                rag,
+                create_datajud_client(settings),
+                prompt_injection_detector=PromptInjectionDetector(
+                    llm,
+                    mode=settings.prompt_injection_scan_mode,
+                    strict_max_chars=settings.prompt_injection_strict_max_chars,
+                    strict_max_batches=settings.prompt_injection_strict_max_batches,
+                ),
+            ),
             run_store=run_store,
             uploads_dir=settings.uploads_dir,
             retain_uploads=settings.retain_uploads,

@@ -9,6 +9,19 @@ from app.schemas.report import LitigationReport
 
 RISK_LABELS = {"low": "Baixo", "medium": "Medio", "high": "Alto", "critical": "Critico"}
 PRIORITY_LABELS = {"urgent": "URGENTE", "high": "Alta", "medium": "Media", "low": "Baixa"}
+SECURITY_LABELS = {
+    "none": "Nenhum",
+    "low": "Baixo",
+    "medium": "Medio",
+    "high": "Alto",
+    "critical": "Critico",
+}
+SECURITY_ACTION_LABELS = {
+    "proceed": "prosseguir",
+    "proceed_with_warning": "prosseguir com aviso e mascaramento",
+    "human_review": "interromper para revisao humana",
+    "block": "bloquear analise automatizada",
+}
 
 
 def _conclusion(c: ConfidentConclusion, indent: str = "") -> list[str]:
@@ -35,6 +48,42 @@ def render_markdown(report: LitigationReport) -> str:  # noqa: PLR0912, PLR0915
     ]
     if report.warnings:
         md += ["> **Avisos:** " + " / ".join(report.warnings), ""]
+
+    if security := report.security_assessment:
+        risk_label = SECURITY_LABELS.get(
+            security.risk_level.value, security.risk_level.value
+        )
+        action_label = SECURITY_ACTION_LABELS.get(
+            security.recommended_action.value,
+            security.recommended_action.value,
+        )
+        scan_status = "completa" if security.scan_complete else "incompleta"
+        md += [
+            "## Seguranca do Documento",
+            "",
+            f"- Varredura: **{scan_status}** ({security.scanned_pages} pagina(s))",
+            f"- Risco de prompt injection: **{risk_label}**",
+            f"- Acao: **{action_label}**",
+            f"- Modo: `{security.scan_mode}`",
+            "",
+        ]
+        if security.findings:
+            md += ["### Achados", ""]
+            for finding in security.findings:
+                quote = " ".join(finding.quote.split()).replace("`", "'")
+                pages = (
+                    f"Paginas {finding.page}-{finding.page_end}"
+                    if finding.page_end and finding.page_end != finding.page
+                    else f"Pagina {finding.page}"
+                )
+                md += [
+                    f"- {pages} · `{finding.category.value}` · "
+                    f"risco **{SECURITY_LABELS[finding.severity.value]}** · "
+                    f"detector `{finding.source.value}`",
+                    f"  - Trecho: \"{quote}\"",
+                    f"  - Motivo: {finding.reasoning}",
+                ]
+            md += [""]
 
     md += ["## Resumo Executivo", "", report.executive_summary or "(indisponivel)", ""]
 

@@ -63,10 +63,14 @@ class SectionAwareChunker:
         self._target = target_chars
         self._overlap = overlap_chars
 
-    def chunk(self, document: ParsedDocument) -> list[Chunk]:
+    def chunk(
+        self, document: ParsedDocument, *, doc_id: str | None = None
+    ) -> list[Chunk]:
         chunks: list[Chunk] = []
         for section in _split_sections(document):
-            chunks.extend(self._chunk_section(document.doc_id, section, len(chunks)))
+            chunks.extend(
+                self._chunk_section(doc_id or document.doc_id, section, len(chunks))
+            )
         return chunks
 
     def _chunk_section(

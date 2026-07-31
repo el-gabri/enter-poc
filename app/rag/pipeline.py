@@ -13,6 +13,8 @@ from app.rag.embeddings import EmbeddingClient
 from app.rag.vector_store import VectorStore
 from app.schemas.document import ParsedDocument
 from app.schemas.rag import Chunk, RetrievedChunk
+from app.schemas.security import PromptInjectionAssessment
+from app.security.sanitization import sanitized_document
 
 logger = get_logger(__name__)
 
@@ -32,9 +34,14 @@ class RagPipeline:
         self._chunker = chunker or SectionAwareChunker()
         self._default_k = default_k
 
-    async def index_document(self, document: ParsedDocument) -> list[Chunk]:
+    async def index_document(
+        self,
+        document: ParsedDocument,
+        security_assessment: PromptInjectionAssessment | None = None,
+    ) -> list[Chunk]:
         """Chunk, embed and store a document. Idempotent per doc_id."""
-        chunks = self._chunker.chunk(document)
+        safe_document = sanitized_document(document, security_assessment)
+        chunks = self._chunker.chunk(safe_document, doc_id=document.doc_id)
         if not chunks:
             logger.warning("index_empty_document", doc_id=document.doc_id)
             return []
