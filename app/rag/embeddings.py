@@ -35,6 +35,10 @@ class OpenAIEmbeddingClient:
         self._model = model
         self._batch_size = batch_size
 
+    @property
+    def model_name(self) -> str:
+        return self._model
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self._batch_size):
@@ -63,6 +67,10 @@ class MockEmbeddingClient:
 
     def __init__(self, dimensions: int = 128) -> None:
         self._dimensions = dimensions
+
+    @property
+    def model_name(self) -> str:
+        return f"mock-hashed-bow-v1:{self._dimensions}"
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return [self._embed_one(text) for text in texts]

@@ -6,6 +6,7 @@ from app.schemas.document import ParsedDocument
 from app.schemas.security import PromptInjectionAssessment
 
 SECURITY_MASK = "[TRECHO SINALIZADO E REMOVIDO PELO CONTROLE DE SEGURANCA]"
+SANITIZER_VERSION = "prompt-injection-mask-v1"
 
 _IGNORABLE_FORMAT_CHARS = frozenset(
     "\u00ad\u200b\u200c\u200d\u2060\ufeff"

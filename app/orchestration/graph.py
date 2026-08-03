@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agents.base import BaseAgent
+from app.agents.base import AgentRunError, BaseAgent
 from app.agents.classifier import ClassifierAgent
 from app.agents.extraction import EntityExtractionAgent
 from app.agents.legal_analysis import LegalAnalysisAgent
@@ -55,6 +55,13 @@ def _agent_node(agent: BaseAgent, state_field: str) -> NodeFn:
         try:
             output, trace = await agent.run(state)
             return {state_field: output, "traces": [trace]}
+        except AgentRunError as exc:
+            logger.exception("agent_failed", agent=agent.name)
+            cause = exc.cause
+            return {
+                "errors": [f"{agent.name}: {type(cause).__name__}: {cause}"],
+                "traces": [exc.trace],
+            }
         except Exception as exc:
             duration_ms = (time.perf_counter() - start) * 1000
             logger.exception("agent_failed", agent=agent.name)

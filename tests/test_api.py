@@ -86,6 +86,26 @@ async def test_full_analysis_lifecycle(client: httpx.AsyncClient) -> None:
     report = report_response.json()
     assert report["metrics"]["agents_run"] == 7
     assert report["ai_reasoning"].startswith("Como esta analise")
+    assert report["metrics"]["retrieval_queries"] == 19
+
+    retrieval_response = await client.get(f"/analyses/{job_id}/retrievals")
+    assert retrieval_response.status_code == 200
+    retrievals = retrieval_response.json()
+    assert len(retrievals) == 19
+    assert {item["agent"] for item in retrievals} == {
+        "entity_extraction",
+        "legal_analysis",
+        "risk_assessment",
+        "strategy",
+    }
+    first_result = retrievals[0]["results"][0]
+    assert first_result["chunk_id"].startswith(report["doc_id"])
+    assert first_result["page_start"] >= 1
+    assert first_result["text_preview"] is None
+    assert len(first_result["content_sha256"]) == 64
+    assert all(item["agent_status"] == "success" for item in retrievals)
+    assert all(item["agent_error"] is None for item in retrievals)
+    assert all(item["prompt_version"] for item in retrievals)
 
     # datajud enrichment is disabled in tests (no key) but always reported
     assert report["datajud"]["attempted"] is False
@@ -107,6 +127,9 @@ async def test_full_analysis_lifecycle(client: httpx.AsyncClient) -> None:
     runs = (await client.get("/runs")).json()
     assert len(runs) == 1
     assert runs[0]["run_id"] == job_id
+    persisted = await client.get(f"/runs/{job_id}/retrievals")
+    assert persisted.status_code == 200
+    assert persisted.json() == retrievals
     totals = (await client.get("/runs/totals")).json()
     assert totals["runs"] == 1
     assert totals["failures"] == 0
@@ -155,6 +178,9 @@ async def test_injected_document_is_flagged_before_analysis(
     assert report["security_assessment"]["recommended_action"] == "block"
     assert report["classification"] is None
     assert report["metrics"]["agents_run"] == 1
+    job_id = response.json()["job_id"]
+    assert (await client.get(f"/analyses/{job_id}/retrievals")).json() == []
+    assert (await client.get(f"/runs/{job_id}/retrievals")).json() == []
 
     runs = (await client.get("/runs")).json()
     totals = (await client.get("/runs/totals")).json()
@@ -192,3 +218,5 @@ async def test_high_risk_document_requires_human_review(
 async def test_unknown_job_is_404(client: httpx.AsyncClient) -> None:
     assert (await client.get("/analyses/nope")).status_code == 404
     assert (await client.get("/analyses/nope/report")).status_code == 404
+    assert (await client.get("/analyses/nope/retrievals")).status_code == 404
+    assert (await client.get("/runs/nope/retrievals")).status_code == 404

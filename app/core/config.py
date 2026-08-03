@@ -61,7 +61,8 @@ class Settings(BaseSettings):
     # --- RAG ---
     chunk_target_chars: int = 1200
     chunk_overlap_chars: int = 150
-    retrieval_k: int = 6
+    retrieval_k: int = Field(default=6, ge=1)
+    retrieval_trace_include_previews: bool = False
 
     # --- Document security ---
     # Every mode applies deterministic bilingual rules to every page. Balanced

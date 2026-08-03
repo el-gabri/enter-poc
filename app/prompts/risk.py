@@ -4,7 +4,7 @@ from app.prompts.base import PromptTemplate
 
 RISK_PROMPT = PromptTemplate(
     name="risk",
-    version="v1.0",
+    version="v1.1",
     system=(
         "Voce e um advogado senior avaliando o RISCO de uma acao judicial "
         "para o reu. Voce recebe trechos da peticao inicial e as analises "
@@ -19,7 +19,9 @@ RISK_PROMPT = PromptTemplate(
         "(valor da causa, pedidos liquidados); caso contrario null.\n"
         "4. overall_level deve ser coerente com os riscos individuais.\n"
         "5. confidence honesto: risco incerto = confidence baixo, e diga "
-        "por que no reasoning. NUNCA invente jurisprudencia."
+        "por que no reasoning. NUNCA invente jurisprudencia.\n"
+        "6. Em toda citation, copie quote literalmente e informe page e "
+        "chunk_id exatamente como aparecem no atributo do trecho."
     ),
     user_template=(
         "Trechos da peticao (idioma: {language}):\n\n{context}\n\n"

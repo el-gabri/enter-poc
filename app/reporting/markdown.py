@@ -32,7 +32,8 @@ def _conclusion(c: ConfidentConclusion, indent: str = "") -> list[str]:
     ]
     for citation in c.citations:
         page = f", p. {citation.page}" if citation.page else ""
-        lines.append(f'{indent}- Fonte: "{citation.quote}"{page}')
+        chunk = f", chunk `{citation.chunk_id}`" if citation.chunk_id else ""
+        lines.append(f'{indent}- Fonte: "{citation.quote}"{page}{chunk}')
     return lines
 
 
@@ -120,6 +121,14 @@ def render_markdown(report: LitigationReport) -> str:  # noqa: PLR0912, PLR0915
         for event in report.timeline:
             date = event.date or "data indeterminada"
             md.append(f"- **{date}**: {event.description}")
+            if event.citation:
+                page = f", p. {event.citation.page}" if event.citation.page else ""
+                chunk = (
+                    f", chunk `{event.citation.chunk_id}`"
+                    if event.citation.chunk_id
+                    else ""
+                )
+                md.append(f'  - Fonte: "{event.citation.quote}"{page}{chunk}')
         md += [""]
 
     if report.main_claims:
@@ -207,6 +216,83 @@ def render_markdown(report: LitigationReport) -> str:  # noqa: PLR0912, PLR0915
         "",
         report.ai_reasoning or "(indisponivel)",
         "",
+    ]
+
+    retrievals = [
+        retrieval for trace in report.traces for retrieval in trace.retrievals
+    ]
+    if retrievals:
+        failed_retrievals = [
+            retrieval for retrieval in retrievals if retrieval.error is not None
+        ]
+        included = {
+            item.chunk_id
+            for retrieval in retrievals
+            for item in retrieval.results
+            if item.included_in_context
+        }
+        md += [
+            "## Auditoria de Recuperacao",
+            "",
+            f"- Consultas executadas: {report.metrics.retrieval_queries}",
+            f"- Resultados ranqueados: {report.metrics.retrieval_results}",
+            f"- Trechos unicos recuperados: {report.metrics.retrieval_unique_chunks}",
+            f"- Trechos enviados aos modelos: {len(included)}",
+            f"- Duracao de recuperacao: {report.metrics.retrieval_duration_ms:.0f} ms",
+            f"- Consultas com falha: {len(failed_retrievals)}",
+        ]
+        if report.metrics.citation_retrieval_coverage is not None:
+            md.append(
+                "- Cobertura de citacoes recuperadas: "
+                f"{report.metrics.citation_retrieval_coverage:.1%}"
+            )
+        md += [
+            "",
+            "Os itens abaixo sao os trechos recuperados que efetivamente entraram "
+            "no contexto. O endpoint JSON de auditoria preserva o top-k completo.",
+            "",
+        ]
+        for retrieval in sorted(
+            retrievals, key=lambda item: (item.agent, item.query_index)
+        ):
+            if retrieval.error:
+                error = " ".join(retrieval.error.split())
+                md += [
+                    f"### {retrieval.agent} · consulta {retrieval.query_index + 1}",
+                    "",
+                    f"`{retrieval.query}`",
+                    "",
+                    f"- Falha de recuperacao: {error}",
+                    "",
+                ]
+                continue
+            selected = [
+                item
+                for item in retrieval.results
+                if item.selected_for_merge and item.included_in_context
+            ]
+            if not selected:
+                continue
+            md += [f"### {retrieval.agent} · consulta {retrieval.query_index + 1}", ""]
+            md += [f"`{retrieval.query}`", ""]
+            if retrieval.agent_status is not None:
+                md += [
+                    f"- Status do agente: {retrieval.agent_status.value}",
+                    f"- Prompt: {retrieval.prompt_version or '-'}",
+                ]
+            for item in sorted(selected, key=lambda result: result.merged_rank or 0):
+                section = item.section or "sem secao"
+                md += [
+                    f"- Rank original {item.rank} · score {item.score:.4f} · "
+                    f"chunk `{item.chunk_id}` · {section} · "
+                    f"paginas {item.page_start}-{item.page_end}",
+                    f"  - SHA-256: `{item.content_sha256}`",
+                ]
+                if item.text_preview:
+                    md.append(f'  - Previa: "{item.text_preview}"')
+            md += [""]
+
+    md += [
         "## Metricas da Execucao",
         "",
         f"- Agentes executados: {report.metrics.agents_run}",
@@ -215,6 +301,10 @@ def render_markdown(report: LitigationReport) -> str:  # noqa: PLR0912, PLR0915
         f"- Duracao total: {report.metrics.total_duration_ms:.0f} ms",
         f"- Modelos: {', '.join(report.metrics.models_used) or '-'}",
         f"- Prompts: {', '.join(report.metrics.prompt_versions) or '-'}",
+        f"- Consultas RAG: {report.metrics.retrieval_queries}",
+        f"- Resultados RAG: {report.metrics.retrieval_results}",
+        f"- Trechos no contexto: {report.metrics.context_chunks}",
+        f"- Duracao RAG: {report.metrics.retrieval_duration_ms:.0f} ms",
         "",
         "---",
         "",

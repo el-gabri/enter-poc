@@ -29,7 +29,8 @@ DOS FATOS / DOS PEDIDOS pollutes retrieval for both "what happened?" and
 - (+) Citations can show "DOS PEDIDOS, p. 12" instead of "chunk 37".
 - (-) Heuristic can miss unconventional headings -> text still lands in the
   preceding section; degraded, not broken. Tunable constants, and the
-  evaluation harness (M4) will measure retrieval quality to tune them.
+  evaluation harness measures Precision@K, Recall@K, HitRate@K, MRR@K and
+  NDCG@K to tune them against stable page/passage relevance judgments.
 
 ## Alternatives rejected
 

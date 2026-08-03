@@ -4,11 +4,19 @@ Groundedness and hallucination are computed MECHANICALLY: a conclusion's
 citations either quote the source document or they do not. No LLM opinion
 involved (see ADR 0008). Completeness and accuracy compare extraction
 output against golden labels.
+
+Retrieval metrics use human-authored page/passages as relevance judgments,
+then resolve those judgments to the chunks produced by the current chunker.
+This keeps the golden data stable when chunk sizes or chunk ids change.
 """
+
+import math
+from collections.abc import Sequence
 
 from app.schemas.common import ConfidentConclusion
 from app.schemas.evaluation import MetricResult
 from app.schemas.lawsuit import LawsuitExtraction, PartyRole
+from app.schemas.rag import Chunk, RetrievedChunk
 from app.schemas.report import LitigationReport
 from app.services.citations import normalize_text, quote_matches
 
@@ -16,6 +24,160 @@ from app.services.citations import normalize_text, quote_matches
 def citation_supported(quote: str, document_text: str) -> bool:
     """True if the quoted passage really occurs in the document."""
     return quote_matches(quote, document_text)
+
+
+def relevant_chunk_ids(
+    chunks: Sequence[Chunk],
+    *,
+    page_ranges: Sequence[tuple[int, int]],
+    passages: Sequence[str],
+) -> set[str]:
+    """Compatibility helper returning the union of relevance-equivalent groups."""
+    return set().union(
+        *relevant_chunk_groups(
+            chunks,
+            page_ranges=page_ranges,
+            passages=passages,
+        )
+    )
+
+
+def relevant_chunk_groups(
+    chunks: Sequence[Chunk],
+    *,
+    page_ranges: Sequence[tuple[int, int]],
+    passages: Sequence[str],
+) -> list[set[str]]:
+    """Resolve each stable judgment unit to equivalent current chunks.
+
+    Multiple overlapping chunks can contain the same passage. They form one
+    relevance group rather than inflating the Recall@K denominator when overlap
+    or chunk size changes.
+    """
+    normalized_passages = [normalize_text(passage) for passage in passages]
+    normalized_passages = [passage for passage in normalized_passages if passage]
+
+    def page_matches(chunk: Chunk, ranges: Sequence[tuple[int, int]]) -> bool:
+        return not ranges or any(
+            chunk.page_start <= end and start <= chunk.page_end
+            for start, end in ranges
+        )
+
+    if normalized_passages:
+        return [
+            {
+                chunk.chunk_id
+                for chunk in chunks
+                if page_matches(chunk, page_ranges)
+                and passage in normalize_text(chunk.text)
+            }
+            for passage in normalized_passages
+        ]
+
+    groups: list[set[str]] = []
+    for start, end in page_ranges:
+        groups.append(
+            {
+                chunk.chunk_id
+                for chunk in chunks
+                if chunk.page_start <= end and start <= chunk.page_end
+            }
+        )
+    return groups
+
+
+def _relevance_groups(value: set[str] | Sequence[set[str]]) -> list[set[str]]:
+    if isinstance(value, set):
+        return [{chunk_id} for chunk_id in sorted(value)]
+    return [set(group) for group in value]
+
+
+def retrieval_metrics_at_k(
+    rankings: Sequence[Sequence[RetrievedChunk]],
+    relevant_ids_by_query: Sequence[set[str] | Sequence[set[str]]],
+    *,
+    k: int,
+) -> list[MetricResult]:
+    """Compute macro ranking metrics over query-level relevance groups."""
+    if k < 1:
+        raise ValueError("k must be at least 1")
+    if len(rankings) != len(relevant_ids_by_query):
+        raise ValueError("rankings and relevance judgments must have equal length")
+    if not rankings:
+        return []
+
+    scores: dict[str, list[float]] = {
+        "retrieval_precision": [],
+        "retrieval_recall": [],
+        "retrieval_hit_rate": [],
+        "retrieval_mrr": [],
+        "retrieval_ndcg": [],
+    }
+    total_hits = 0
+    total_relevant = 0
+
+    for retrieved, raw_groups in zip(
+        rankings, relevant_ids_by_query, strict=True
+    ):
+        groups = _relevance_groups(raw_groups)
+        if not groups or any(not group for group in groups):
+            raise ValueError("retrieval relevance judgment resolved to no current chunk")
+
+        seen_chunk_ids: set[str] = set()
+        groups_hit: set[int] = set()
+        relevance: list[bool] = []
+        for item in retrieved[:k]:
+            chunk_id = item.chunk.chunk_id
+            if chunk_id in seen_chunk_ids:
+                relevance.append(False)
+                continue
+            seen_chunk_ids.add(chunk_id)
+            matched_groups = {
+                index for index, group in enumerate(groups) if chunk_id in group
+            }
+            new_groups = matched_groups - groups_hit
+            relevance.append(bool(new_groups))
+            groups_hit.update(matched_groups)
+
+        hits = sum(relevance)
+        relevant_units_hit = len(groups_hit)
+        total_hits += relevant_units_hit
+        total_relevant += len(groups)
+
+        scores["retrieval_precision"].append(hits / k)
+        scores["retrieval_recall"].append(relevant_units_hit / len(groups))
+        scores["retrieval_hit_rate"].append(1.0 if relevant_units_hit else 0.0)
+        first_relevant_rank = next(
+            (rank for rank, is_relevant in enumerate(relevance, start=1) if is_relevant),
+            None,
+        )
+        scores["retrieval_mrr"].append(
+            1.0 / first_relevant_rank if first_relevant_rank else 0.0
+        )
+
+        dcg = sum(
+            1.0 / math.log2(rank + 1)
+            for rank, is_relevant in enumerate(relevance, start=1)
+            if is_relevant
+        )
+        ideal_hits = min(len(groups), k)
+        idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_hits + 1))
+        scores["retrieval_ndcg"].append(dcg / idcg if idcg else 0.0)
+
+    query_count = len(rankings)
+    details = (
+        f"macro average over {query_count} queries at k={k}; "
+        f"{total_hits}/{total_relevant} relevance units retrieved"
+    )
+
+    return [
+        MetricResult(
+            name=f"{name}@{k}",
+            score=round(sum(values) / query_count, 3),
+            details=details,
+        )
+        for name, values in scores.items()
+    ]
 
 
 def _all_conclusions(report: LitigationReport) -> list[ConfidentConclusion]:

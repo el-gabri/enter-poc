@@ -184,6 +184,31 @@ async def test_graph_runs_end_to_end() -> None:
     assert report.datajud is not None and report.datajud.attempted is False
     assert report.metrics.total_tokens > 0
     assert "classifier:v1.0" in report.metrics.prompt_versions
+    retrievals = [
+        retrieval for trace in report.traces for retrieval in trace.retrievals
+    ]
+    assert {retrieval.agent for retrieval in retrievals} == {
+        "entity_extraction",
+        "legal_analysis",
+        "risk_assessment",
+        "strategy",
+    }
+    assert report.metrics.retrieval_queries == len(retrievals) == 19
+    assert report.metrics.retrieval_results > 0
+    assert report.metrics.retrieval_unique_chunks > 0
+    assert report.metrics.context_chunks > 0
+    assert report.metrics.retrieval_duration_ms >= 0
+    assert all(retrieval.doc_id == report.doc_id for retrieval in retrievals)
+    assert any(
+        item.included_in_context
+        for retrieval in retrievals
+        for item in retrieval.results
+    )
+    assert all(
+        retrieval.agent_status is AgentStatus.SUCCESS for retrieval in retrievals
+    )
+    assert all(retrieval.agent_error is None for retrieval in retrievals)
+    assert all(retrieval.prompt_version for retrieval in retrievals)
 
 
 async def test_graph_composes_partial_report_after_agent_failure() -> None:
@@ -223,6 +248,67 @@ async def test_partial_report_when_one_branch_fails() -> None:
     assert state.report.legal_risks is None
     assert state.report.suggested_strategy is not None
     assert "ATENCAO" in state.report.ai_reasoning  # failure disclosed
+    risk_trace = next(t for t in state.traces if t.agent == "risk_assessment")
+    assert risk_trace.retrievals  # retrieval audit survives a later LLM failure
+    assert all(
+        retrieval.agent_status is AgentStatus.FAILED
+        for retrieval in risk_trace.retrievals
+    )
+    assert all(
+        retrieval.agent_error == risk_trace.error
+        for retrieval in risk_trace.retrievals
+    )
+    assert {
+        retrieval.prompt_version for retrieval in risk_trace.retrievals
+    } == {"risk:v1.1"}
+
+
+async def test_retrieval_failure_preserves_all_attempts_in_failed_agent_trace() -> None:
+    class OneLookupFailsStore(InMemoryVectorStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.query_calls = 0
+            self.failed = False
+
+        async def query(self, vector, doc_id, k):  # type: ignore[override]
+            self.query_calls += 1
+            if self.query_calls == 2 and not self.failed:
+                self.failed = True
+                raise RuntimeError("vector store timeout")
+            return await super().query(vector, doc_id, k)
+
+    store = OneLookupFailsStore()
+    rag = RagPipeline(
+        embedder=MockEmbeddingClient(), store=store, default_k=3
+    )
+    graph = build_analysis_graph(MockLLMClient(responses=_canned_responses()), rag)
+
+    result = await graph.ainvoke(AnalysisState(document=_document()))
+    state = AnalysisState(**result)
+
+    extraction_trace = next(
+        trace for trace in state.traces if trace.agent == "entity_extraction"
+    )
+    retrievals = extraction_trace.retrievals
+    assert extraction_trace.status is AgentStatus.FAILED
+    assert extraction_trace.error is not None
+    assert "RetrievalBatchError" in extraction_trace.error
+    assert len(retrievals) == 6
+    assert [retrieval.query_index for retrieval in retrievals] == list(range(6))
+    assert sum(retrieval.error is not None for retrieval in retrievals) == 1
+    assert any(retrieval.results for retrieval in retrievals)
+    assert all(
+        retrieval.agent_status is AgentStatus.FAILED for retrieval in retrievals
+    )
+    assert all(
+        retrieval.agent_error == extraction_trace.error
+        for retrieval in retrievals
+    )
+    assert {retrieval.prompt_version for retrieval in retrievals} == {
+        "extraction:v1.0"
+    }
+    assert state.report is not None
+    assert state.report.parties is None
 
 
 async def test_high_risk_prompt_injection_halts_before_indexing() -> None:

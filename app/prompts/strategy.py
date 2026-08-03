@@ -4,7 +4,7 @@ from app.prompts.base import PromptTemplate
 
 STRATEGY_PROMPT = PromptTemplate(
     name="strategy",
-    version="v1.0",
+    version="v1.1",
     system=(
         "Voce e um advogado senior propondo a ESTRATEGIA INICIAL de defesa "
         "em uma acao judicial. Voce recebe trechos da peticao inicial e as "
@@ -22,7 +22,9 @@ STRATEGY_PROMPT = PromptTemplate(
         "prazos processuais) e rationale.\n"
         "5. missing_information: o que o time precisa obter (contratos, "
         "logs, comprovantes) antes de fechar a estrategia.\n"
-        "6. Baseie-se apenas nos dados fornecidos; confidence honesto."
+        "6. Baseie-se apenas nos dados fornecidos; confidence honesto.\n"
+        "7. Em toda citation, copie quote literalmente e informe page e "
+        "chunk_id exatamente como aparecem no atributo do trecho."
     ),
     user_template=(
         "Trechos da peticao (idioma: {language}):\n\n{context}\n\n"

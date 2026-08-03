@@ -12,5 +12,25 @@
     "plaintiff": "Maria Silva",
     "defendant": "Banco Exemplo",
     "main_requests_contains": ["danos morais", "restituir em dobro"]
+  },
+  "retrieval": {
+    "k": 3,
+    "queries": [
+      {
+        "query": "cobrancas mensais indevidas tarifa servicos conta corrente",
+        "relevant_page_ranges": [{"start": 1, "end": 1}],
+        "relevant_passages": ["cobrancas mensais indevidas de tarifa de servicos nao contratados"]
+      },
+      {
+        "query": "artigo 42 CDC repeticao do indebito em dobro",
+        "relevant_page_ranges": [{"start": 2, "end": 2}],
+        "relevant_passages": ["artigo 42, paragrafo unico, do CDC"]
+      },
+      {
+        "query": "pedido indenizacao danos morais valor 15000",
+        "relevant_page_ranges": [{"start": 2, "end": 2}],
+        "relevant_passages": ["indenizacao por danos morais no valor de R$ 15.000,00"]
+      }
+    ]
   }
 }

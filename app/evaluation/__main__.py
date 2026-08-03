@@ -26,9 +26,10 @@ async def main() -> None:
     golden_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("eval_data")
 
     llm = create_llm_client(settings)
+    rag = create_rag_pipeline(settings)
     graph = build_analysis_graph(
         llm,
-        create_rag_pipeline(settings),
+        rag,
         prompt_injection_detector=PromptInjectionDetector(
             llm,
             mode=settings.prompt_injection_scan_mode,
@@ -38,7 +39,7 @@ async def main() -> None:
     )
     judge_llm = llm if settings.llm_provider is not LLMProvider.MOCK else None
 
-    runner = EvaluationRunner(graph, judge_llm=judge_llm)
+    runner = EvaluationRunner(graph, judge_llm=judge_llm, rag=rag)
     summary = await runner.run(load_dataset(golden_dir))
 
     print("\n=== Evaluation summary ===")

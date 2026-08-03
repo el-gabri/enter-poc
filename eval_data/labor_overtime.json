@@ -12,5 +12,25 @@
     "plaintiff": "Carlos Pereira",
     "defendant": "Metalurgica Forte",
     "main_requests_contains": ["horas extras"]
+  },
+  "retrieval": {
+    "k": 3,
+    "queries": [
+      {
+        "query": "jornada segunda sabado horas extras intervalo trabalho",
+        "relevant_page_ranges": [{"start": 1, "end": 1}],
+        "relevant_passages": ["jornada de segunda a sabado, das 7h as 19h"]
+      },
+      {
+        "query": "artigos 58 59 CLT jornada horas extras adicional",
+        "relevant_page_ranges": [{"start": 2, "end": 2}],
+        "relevant_passages": ["artigos 58 e 59 da CLT"]
+      },
+      {
+        "query": "pedido pagamento horas extras reflexos valor",
+        "relevant_page_ranges": [{"start": 2, "end": 2}],
+        "relevant_passages": ["pagamento de horas extras e reflexos"]
+      }
+    ]
   }
 }

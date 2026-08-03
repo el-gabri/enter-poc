@@ -26,6 +26,9 @@ missing information, and validation of the case number against DataJud -
 the official CNJ court-records API. Before any document content reaches the
 RAG or LLM layers, a prompt-injection gate scans every page and includes any
 security findings in the report. Export as Markdown, PDF, DOCX or JSON.
+Every RAG query also produces a durable audit trail with the ranked chunk
+IDs, pages, sections, similarity scores, hashes, latency, and an explicit
+marker for the chunks that actually reached each model prompt.
 
 ## Architecture
 
@@ -37,6 +40,7 @@ Browser -> Streamlit -> FastAPI (202 + async job)
                        |                                  +--> DataJud enrichment -------+
                        +--> halt for human review / block -------------------------------+
     -> RAG: section-aware chunking -> embeddings -> ChromaDB (per-doc isolation)
+       -> retrieval audit: query -> top-k ranks/scores -> prompt inclusion
     -> LLM port: OpenAI adapter | Mock adapter (offline mode)
     -> Deterministic report composer -> MD / PDF / DOCX / JSON
 ```
@@ -57,6 +61,7 @@ Full diagram and layer map: [docs/architecture.md](docs/architecture.md).
 | [0008](docs/adr/0008-citation-based-groundedness.md) | Hallucination detection by mechanical citation verification |
 | [0009](docs/adr/0009-in-process-async-jobs.md) | In-process async jobs with a broker-ready interface |
 | [0010](docs/adr/0010-prompt-injection-security-gate.md) | Scan untrusted document content before indexing or LLM analysis |
+| [0011](docs/adr/0011-retrieval-traceability-and-evaluation.md) | Persist query-to-context provenance and evaluate retrieval rankings |
 
 ### Explainability model
 
@@ -81,6 +86,20 @@ Every LLM call returns typed metadata (provider, model, latency, tokens,
 cost, prompt version) - agents physically cannot make untracked calls.
 Per-run aggregates persist to a JSONL run store surfaced in the API
 (`/runs`, `/runs/totals`) and the UI's cost panel.
+
+Retrieval traces are nested under each agent trace and persist the raw top-k
+rankings without storing full chunk text: query/hash, requested `k`, rank,
+similarity score, chunk/document IDs, section, page span, indexed-text hash,
+latency, embedding/index versions, and whether the chunk survived deduplication
+and context truncation. Failed embedding/search attempts retain one event per
+query, successful sibling lookups, and the consuming agent's status, error, and
+prompt version. Text previews are disabled by default; enable
+`LITIGATION_RETRIEVAL_TRACE_INCLUDE_PREVIEWS=true` only under an explicit data
+retention and access-control policy. The full audit is available at
+`/analyses/{job_id}/retrievals`; historical traces remain available at
+`/runs/{run_id}/retrievals`. The Streamlit explainability tab provides the same
+data as a filterable table. `citation_retrieval_coverage` counts a citation only
+when its chunk was included in the context of the agent that produced it.
 
 ### Prompt-injection defense
 
@@ -108,9 +127,12 @@ python -m app.evaluation           # golden dataset in eval_data/
 ```
 
 Metrics: groundedness, hallucination rate, citation coverage, extraction
-accuracy, completeness, classification accuracy, and LLM-as-judge response
-quality (real provider only). Runs offline in CI with the mock provider as
-a pipeline health check.
+accuracy, completeness, classification accuracy, Precision@K, Recall@K,
+HitRate@K, MRR@K, NDCG@K, and LLM-as-judge response quality (real provider
+only). Retrieval labels use relevant page ranges and passage anchors so they
+remain valid when chunk sizes change. Overlapping chunks that satisfy the same
+passage label count as one relevance unit, and unresolved labels fail loudly.
+Runs offline in CI with the mock provider as a pipeline health check.
 
 ## Quickstart
 
@@ -164,12 +186,12 @@ app/
 ├── enrichment/     DataJud (CNJ) client + graph node
 ├── services/       analysis use case · deterministic report composer
 ├── evaluation/     metrics · golden runner · LLM judge · CLI
-├── observability/  JSONL run store
+├── observability/  JSONL run store with durable agent/retrieval traces
 ├── reporting/      Markdown (canonical) -> PDF / DOCX converters
 └── api/            FastAPI app · async job manager · routes
 frontend/           Streamlit UI (pure API client)
 eval_data/          golden dataset
-docs/               architecture + 10 ADRs + demo script
+docs/               architecture + 11 ADRs + demo script
 tests/              offline unit, integration and security tests
 ```
 

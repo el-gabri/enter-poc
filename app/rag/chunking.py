@@ -57,11 +57,18 @@ def _split_sections(document: ParsedDocument) -> list[_Section]:
 class SectionAwareChunker:
     """Splits a ParsedDocument into retrieval-ready chunks."""
 
+    VERSION = "section-aware-v1"
+
     def __init__(self, target_chars: int = 1200, overlap_chars: int = 150) -> None:
         if overlap_chars >= target_chars:
             raise ValueError("overlap_chars must be smaller than target_chars")
         self._target = target_chars
         self._overlap = overlap_chars
+
+    @property
+    def index_version(self) -> str:
+        """Configuration fingerprint recorded in retrieval audit traces."""
+        return f"{self.VERSION}:target={self._target}:overlap={self._overlap}"
 
     def chunk(
         self, document: ParsedDocument, *, doc_id: str | None = None

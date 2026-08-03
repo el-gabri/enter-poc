@@ -1,6 +1,6 @@
 """Tests for runtime citation validation before report delivery."""
 
-from app.schemas.analysis import LawsuitClassification
+from app.schemas.analysis import LawsuitClassification, TimelineEvent
 from app.schemas.common import Citation, ConfidentConclusion
 from app.schemas.document import DocumentPage, ExtractionMethod, ParsedDocument
 from app.schemas.lawsuit import LawsuitType
@@ -79,3 +79,23 @@ def test_rejects_a_quote_on_the_wrong_page_even_if_it_exists_elsewhere() -> None
     assert result.rejected_citations == 1
     assert result.conclusions_without_verified_citation == 1
     assert report.classification.conclusion.citations == []
+
+
+def test_rejects_an_invalid_timeline_citation() -> None:
+    document = _document()
+    report = _report(document)
+    assert report.classification is not None
+    report.classification.conclusion.citations = []
+    report.timeline = [
+        TimelineEvent(
+            date="2025-01-10",
+            description="Pedido de indenizacao",
+            citation=Citation(quote="indenizacao", page=1),
+        )
+    ]
+
+    result = validate_report_citations(report, document, [])
+
+    assert result.total_citations == 1
+    assert result.rejected_citations == 1
+    assert report.timeline[0].citation is None

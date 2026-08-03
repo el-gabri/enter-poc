@@ -4,7 +4,7 @@ from app.prompts.base import PromptTemplate
 
 LEGAL_ANALYSIS_PROMPT = PromptTemplate(
     name="legal_analysis",
-    version="v1.0",
+    version="v1.1",
     system=(
         "Voce e um advogado senior analisando uma acao judicial recebida "
         "pelo time de defesa. Produza uma leitura juridica estruturada da "
@@ -22,7 +22,9 @@ LEGAL_ANALYSIS_PROMPT = PromptTemplate(
         "6. Toda conclusao precisa de reasoning explicito: explique o PORQUE, "
         "nunca apenas a conclusao. Este e o requisito central do produto.\n"
         "7. Classificacao previa da acao: {lawsuit_type}. Considere-a, mas "
-        "corrija-a implicitamente se os trechos indicarem outra leitura."
+        "corrija-a implicitamente se os trechos indicarem outra leitura.\n"
+        "8. Em toda citation, copie quote literalmente e informe page e "
+        "chunk_id exatamente como aparecem no atributo do trecho."
     ),
     user_template=(
         "Trechos da peticao inicial (idioma: {language}):\n\n"

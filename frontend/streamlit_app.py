@@ -62,7 +62,126 @@ def render_conclusion(conclusion: dict, key_prefix: str) -> None:
         st.write(conclusion.get("reasoning", ""))
         for citation in conclusion.get("citations", []):
             page = f" (p. {citation['page']})" if citation.get("page") else ""
-            st.caption(f'Fonte: "{citation["quote"]}"{page}')
+            chunk = f" · chunk {citation['chunk_id']}" if citation.get("chunk_id") else ""
+            st.caption(f'Fonte: "{citation["quote"]}"{page}{chunk}')
+
+
+def render_retrieval_audit(report: dict) -> None:
+    """Display ranked retrieval provenance using native Streamlit components."""
+    retrievals = [
+        retrieval
+        for trace in report.get("traces", [])
+        for retrieval in trace.get("retrievals", [])
+    ]
+    if not retrievals:
+        st.info("Nenhuma recuperacao RAG foi executada nesta analise.")
+        return
+
+    metrics = report.get("metrics", {})
+    with st.container(horizontal=True):
+        st.metric("Consultas", metrics.get("retrieval_queries", 0), border=True)
+        st.metric("Resultados", metrics.get("retrieval_results", 0), border=True)
+        st.metric(
+            "Trechos unicos",
+            metrics.get("retrieval_unique_chunks", 0),
+            border=True,
+        )
+        st.metric("No contexto", metrics.get("context_chunks", 0), border=True)
+        st.metric(
+            "Duracao RAG",
+            f"{metrics.get('retrieval_duration_ms', 0):.0f} ms",
+            border=True,
+        )
+
+    coverage = metrics.get("citation_retrieval_coverage")
+    if coverage is not None:
+        st.caption(
+            f"Cobertura de citacoes vinculadas ao contexto recuperado: {coverage:.1%}"
+        )
+
+    failed_retrievals = [
+        retrieval for retrieval in retrievals if retrieval.get("error")
+    ]
+    if failed_retrievals:
+        st.warning(
+            f"{len(failed_retrievals)} consulta(s) de recuperacao falharam. "
+            "Os demais resultados do mesmo lote foram preservados para auditoria."
+        )
+        with st.expander("Detalhes das falhas de recuperacao"):
+            for retrieval in failed_retrievals:
+                st.write(
+                    f"**{retrieval['agent']} · consulta "
+                    f"{retrieval['query_index'] + 1}:** {retrieval['error']}"
+                )
+
+    context_only = st.toggle(
+        "Mostrar apenas trechos enviados aos modelos",
+        value=True,
+        key="retrieval_context_only",
+    )
+    rows = []
+    for retrieval in sorted(
+        retrievals, key=lambda item: (item["agent"], item["query_index"])
+    ):
+        retrieval_results = retrieval.get("results", [])
+        for item in retrieval_results:
+            if context_only and not item.get("included_in_context"):
+                continue
+            rows.append(
+                {
+                    "Agente": retrieval["agent"],
+                    "Status": retrieval.get("agent_status") or "-",
+                    "Prompt": retrieval.get("prompt_version") or "-",
+                    "Consulta": retrieval["query"],
+                    "Rank": item["rank"],
+                    "Rank combinado": item.get("merged_rank"),
+                    "Score": item["score"],
+                    "Chunk": item["chunk_id"],
+                    "Secao": item.get("section") or "sem secao",
+                    "Paginas": f"{item['page_start']}-{item['page_end']}",
+                    "No contexto": item.get("included_in_context", False),
+                    "Previa": item.get("text_preview") or "(retencao desativada)",
+                    "SHA-256": item["content_sha256"],
+                }
+            )
+
+        if not context_only and not retrieval_results:
+            rows.append(
+                {
+                    "Agente": retrieval["agent"],
+                    "Status": retrieval.get("agent_status") or "-",
+                    "Prompt": retrieval.get("prompt_version") or "-",
+                    "Consulta": retrieval["query"],
+                    "Rank": None,
+                    "Rank combinado": None,
+                    "Score": None,
+                    "Chunk": "-",
+                    "Secao": "-",
+                    "Paginas": "-",
+                    "No contexto": False,
+                    "Previa": "-",
+                    "SHA-256": "-",
+                }
+            )
+
+    if rows:
+        st.dataframe(
+            rows,
+            hide_index=True,
+            column_config={
+                "Rank": st.column_config.NumberColumn(format="%d"),
+                "Rank combinado": st.column_config.NumberColumn(format="%d"),
+                "Score": st.column_config.NumberColumn(format="%.4f"),
+                "No contexto": st.column_config.CheckboxColumn(),
+                "Chunk": st.column_config.TextColumn(pinned=True),
+            },
+        )
+    else:
+        st.info("Nenhum trecho recuperado foi enviado aos modelos.")
+    st.caption(
+        "A tabela completa preserva o top-k bruto por consulta. As previas ficam "
+        "desativadas por padrao; o hash identifica exatamente o texto indexado."
+    )
 
 
 def render_stages(stages: list[dict], container) -> None:
@@ -258,6 +377,14 @@ if job_id := st.session_state.get("job_id"):
             st.subheader("Linha do Tempo")
             for event in timeline:
                 st.markdown(f"- **{event.get('date') or 's/ data'}** - {event['description']}")
+                if citation := event.get("citation"):
+                    page = f"p. {citation['page']}" if citation.get("page") else "s/ pagina"
+                    chunk = (
+                        f" · chunk {citation['chunk_id']}"
+                        if citation.get("chunk_id")
+                        else ""
+                    )
+                    st.caption(f'Fonte: "{citation["quote"]}" · {page}{chunk}')
         if parties := (report.get("parties") or {}).get("parties"):
             st.subheader("Partes")
             st.table(
@@ -342,6 +469,8 @@ if job_id := st.session_state.get("job_id"):
                 for t in report.get("traces", [])
             ]
         )
+        st.subheader("Auditoria de recuperacao")
+        render_retrieval_audit(report)
 
     # ------------------------------------------------ downloads
     st.divider()

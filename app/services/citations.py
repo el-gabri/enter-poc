@@ -56,6 +56,16 @@ def validate_report_citations(
     rejected = 0
     without_verified = 0
 
+    for event in report.timeline:
+        if event.citation is None:
+            continue
+        total += 1
+        if _citation_is_valid(event.citation, document, chunks_by_id):
+            verified += 1
+        else:
+            rejected += 1
+            event.citation = None
+
     for conclusion in conclusions:
         valid_citations: list[Citation] = []
         for citation in conclusion.citations:

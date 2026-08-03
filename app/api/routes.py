@@ -15,6 +15,7 @@ from app.api.schemas import JobCreated, JobState, JobStatus
 from app.observability.store import RunStore
 from app.reporting.markdown import render_markdown
 from app.schemas.report import LitigationReport
+from app.schemas.trace import AgentTrace, RetrievalTrace
 
 router = APIRouter()
 
@@ -62,6 +63,18 @@ def _get_job_or_404(manager: AnalysisJobManager, job_id: str) -> Job:
     return job
 
 
+def _retrievals(traces: list[AgentTrace]) -> list[RetrievalTrace]:
+    """Flatten and deterministically order nested agent retrieval traces."""
+    return sorted(
+        (retrieval for trace in traces for retrieval in trace.retrievals),
+        key=lambda retrieval: (
+            retrieval.created_at,
+            retrieval.agent,
+            retrieval.query_index,
+        ),
+    )
+
+
 @router.get("/analyses/{job_id}", response_model=JobStatus)
 async def get_analysis(job_id: str, manager: JobManagerDep) -> JobStatus:
     job = _get_job_or_404(manager, job_id)
@@ -84,6 +97,22 @@ async def get_report(job_id: str, manager: JobManagerDep) -> LitigationReport:
     if job.result is None or job.result.report is None:
         raise HTTPException(status_code=422, detail={"errors": job.errors})
     return job.result.report
+
+
+@router.get(
+    "/analyses/{job_id}/retrievals",
+    response_model=list[RetrievalTrace],
+)
+async def get_analysis_retrievals(
+    job_id: str, manager: JobManagerDep
+) -> list[RetrievalTrace]:
+    """Return the complete ranked retrieval audit for an analysis."""
+    job = _get_job_or_404(manager, job_id)
+    if job.state in (JobState.QUEUED, JobState.RUNNING):
+        raise HTTPException(status_code=409, detail="Analysis still in progress")
+    if job.result is None:
+        raise HTTPException(status_code=422, detail={"errors": job.errors})
+    return _retrievals(job.result.traces)
 
 
 @router.get("/analyses/{job_id}/report.md", response_class=PlainTextResponse)
@@ -132,3 +161,15 @@ async def list_runs(store: RunStoreDep, limit: int = 20) -> list[dict]:
 @router.get("/runs/totals")
 async def run_totals(store: RunStoreDep) -> dict:
     return store.totals()
+
+
+@router.get(
+    "/runs/{run_id}/retrievals",
+    response_model=list[RetrievalTrace],
+)
+async def get_run_retrievals(run_id: str, store: RunStoreDep) -> list[RetrievalTrace]:
+    """Return persisted retrieval traces even after in-memory jobs expire."""
+    record = store.get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return _retrievals(record.traces)

@@ -8,7 +8,7 @@ built from real traces, and missing information comes from the extraction
 schema itself.
 """
 
-from app.schemas.common import ConfidentConclusion
+from app.schemas.common import Citation, ConfidentConclusion
 from app.schemas.report import LitigationReport, RunMetrics
 from app.schemas.security import PromptInjectionAssessment, SecurityRiskLevel
 from app.schemas.trace import AgentStatus, AgentTrace
@@ -58,6 +58,33 @@ def compose_report(state: object) -> LitigationReport:
     citation_result = validate_report_citations(
         report, document, state.chunks  # type: ignore[attr-defined]
     )
+    included_by_agent: dict[str, set[str]] = {}
+    for trace in traces:
+        for retrieval in trace.retrievals:
+            included_by_agent.setdefault(retrieval.agent, set()).update(
+                item.chunk_id
+                for item in retrieval.results
+                if item.included_in_context
+            )
+    chunk_citations = [
+        (agent, citation)
+        for agent, citation in _citations_by_agent(report)
+        if citation.chunk_id is not None
+    ]
+    if chunk_citations:
+        retrieved_citations = sum(
+            citation.chunk_id in included_by_agent.get(agent, set())
+            for agent, citation in chunk_citations
+        )
+        report.metrics.citation_retrieval_coverage = round(
+            retrieved_citations / len(chunk_citations), 3
+        )
+        if retrieved_citations < len(chunk_citations):
+            report.warnings.append(
+                "Revisao de rastreabilidade: "
+                f"{len(chunk_citations) - retrieved_citations} citacao(oes) apontam "
+                "para trechos sem registro de inclusao no contexto dos agentes."
+            )
     if citation_result.rejected_citations:
         report.warnings.append(
             f"{citation_result.rejected_citations} citacao(oes) com localizacao de "
@@ -70,6 +97,49 @@ def compose_report(state: object) -> LitigationReport:
             f"{citation_result.total_conclusions} conclusao(oes) nao possuem citacao verificada."
         )
     return report
+
+
+def _citations_by_agent(report: LitigationReport) -> list[tuple[str, Citation]]:
+    """Associate every report citation with the agent that produced it."""
+    attributed: list[tuple[str, Citation]] = []
+
+    def add(agent: str, conclusions: list[ConfidentConclusion]) -> None:
+        attributed.extend(
+            (agent, citation)
+            for conclusion in conclusions
+            for citation in conclusion.citations
+        )
+
+    if report.classification:
+        add("classifier", [report.classification.conclusion])
+    attributed.extend(
+        ("legal_analysis", event.citation)
+        for event in report.timeline
+        if event.citation is not None
+    )
+    add("legal_analysis", [claim.assessment for claim in report.main_claims])
+    add("legal_analysis", report.evidence_found)
+    if report.legal_risks:
+        add(
+            "risk_assessment",
+            [
+                report.legal_risks.overall,
+                *(item.conclusion for item in report.legal_risks.risks),
+            ],
+        )
+    if report.suggested_strategy:
+        add(
+            "strategy",
+            [
+                report.suggested_strategy.overall_approach,
+                report.suggested_strategy.settlement,
+                *(
+                    defense.assessment
+                    for defense in report.suggested_strategy.defenses
+                ),
+            ],
+        )
+    return attributed
 
 
 def _collect_conclusions(
@@ -114,6 +184,19 @@ def _missing_information(extraction: object, strategy: object) -> list[str]:
 
 def _build_metrics(traces: list[AgentTrace]) -> RunMetrics:
     metered = [t.llm_meta for t in traces if t.llm_meta is not None]
+    retrievals = [retrieval for trace in traces for retrieval in trace.retrievals]
+    result_chunk_ids = {
+        item.chunk_id for retrieval in retrievals for item in retrieval.results
+    }
+    context_chunk_ids = {
+        item.chunk_id
+        for retrieval in retrievals
+        for item in retrieval.results
+        if item.included_in_context
+    }
+    batch_durations = {
+        retrieval.batch_id: retrieval.batch_duration_ms for retrieval in retrievals
+    }
     return RunMetrics(
         total_duration_ms=round(sum(t.duration_ms for t in traces), 1),
         total_tokens=sum(m.usage.total_tokens for m in metered),
@@ -123,6 +206,11 @@ def _build_metrics(traces: list[AgentTrace]) -> RunMetrics:
             {m.prompt_version for m in metered if m.prompt_version}
         ),
         agents_run=len(traces),
+        retrieval_queries=len(retrievals),
+        retrieval_results=sum(retrieval.returned_count for retrieval in retrievals),
+        retrieval_unique_chunks=len(result_chunk_ids),
+        context_chunks=len(context_chunk_ids),
+        retrieval_duration_ms=round(sum(batch_durations.values()), 1),
     )
 
 
@@ -199,6 +287,22 @@ def _build_ai_reasoning(state: object, traces: list[AgentTrace]) -> str:
             ]
         )
         next_step += 2
+        retrievals = [
+            retrieval for trace in traces for retrieval in trace.retrievals
+        ]
+        if retrievals:
+            included = {
+                item.chunk_id
+                for retrieval in retrievals
+                for item in retrieval.results
+                if item.included_in_context
+            }
+            lines.append(
+                f"{next_step}. A auditoria registrou {len(retrievals)} consultas, "
+                f"{sum(item.returned_count for item in retrievals)} resultados "
+                f"ranqueados e {len(included)} trechos efetivamente enviados aos modelos."
+            )
+            next_step += 1
     elif security_assessment is not None and not (
         security_assessment.recommended_action.allows_automated_analysis
     ):

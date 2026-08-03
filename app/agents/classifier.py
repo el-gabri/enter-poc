@@ -1,6 +1,6 @@
 """Lawsuit type classifier agent."""
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, BuiltAgentPrompt
 from app.agents.context import format_context
 from app.llm.base import LLMClient
 from app.prompts.classifier import CLASSIFIER_PROMPT
@@ -21,11 +21,13 @@ class ClassifierAgent(BaseAgent[LawsuitClassification]):
     def __init__(self, llm: LLMClient) -> None:
         super().__init__(llm)
 
-    async def build_user_prompt(self, state: object) -> str:
+    async def build_user_prompt(self, state: object) -> BuiltAgentPrompt:
         document = state.document  # type: ignore[attr-defined]
         context = format_context(
             document,
             retrieved=[],
             security_assessment=getattr(state, "security_assessment", None),
         )
-        return self.prompt.render_user(language=document.language, context=context)
+        return BuiltAgentPrompt(
+            text=self.prompt.render_user(language=document.language, context=context)
+        )

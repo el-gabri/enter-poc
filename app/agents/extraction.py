@@ -1,7 +1,7 @@
 """Structured entity extraction agent."""
 
-from app.agents.base import BaseAgent
-from app.agents.context import format_context, retrieve_for_queries
+from app.agents.base import BaseAgent, BuiltAgentPrompt
+from app.agents.context import format_retrieval_bundle, retrieve_for_queries_with_trace
 from app.llm.base import LLMClient
 from app.prompts.extraction import EXTRACTION_PROMPT
 from app.rag.pipeline import RagPipeline
@@ -30,14 +30,20 @@ class EntityExtractionAgent(BaseAgent[LawsuitExtraction]):
         super().__init__(llm)
         self._rag = rag
 
-    async def build_user_prompt(self, state: object) -> str:
+    async def build_user_prompt(self, state: object) -> BuiltAgentPrompt:
         document = state.document  # type: ignore[attr-defined]
-        retrieved = await retrieve_for_queries(
-            self._rag, doc_id=document.doc_id, queries=EXTRACTION_QUERIES
+        bundle = await retrieve_for_queries_with_trace(
+            self._rag,
+            doc_id=document.doc_id,
+            queries=EXTRACTION_QUERIES,
+            agent=self.name,
         )
-        context = format_context(
+        context, retrievals = format_retrieval_bundle(
             document,
-            retrieved,
+            bundle,
             security_assessment=getattr(state, "security_assessment", None),
         )
-        return self.prompt.render_user(language=document.language, context=context)
+        return BuiltAgentPrompt(
+            text=self.prompt.render_user(language=document.language, context=context),
+            retrievals=retrievals,
+        )

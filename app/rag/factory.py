@@ -33,4 +33,5 @@ def create_rag_pipeline(settings: Settings) -> RagPipeline:
             overlap_chars=settings.chunk_overlap_chars,
         ),
         default_k=settings.retrieval_k,
+        include_trace_previews=settings.retrieval_trace_include_previews,
     )

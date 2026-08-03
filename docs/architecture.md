@@ -18,6 +18,8 @@ flowchart TD
     L --> S[Strategy Agent]
     R & S --> G
     E & L & R & S -->|retrieve context| RAG[(ChromaDB Vector Store)]
+    RAG --> RT[Retrieval audit: query, ranks, scores, pages, hashes]
+    RT --> OBS
     I -->|chunks + embeddings| RAG
     E -.->|case number lookup| DJ[DataJud CNJ API]
     DJ --> G
@@ -30,7 +32,7 @@ flowchart TD
     PI -.->|balanced: suspicious excerpts only| LC
     C & E & L & R & S --> LC
     G --> REP[Structured Report - MD / PDF / DOCX]
-    O --> OBS[(Observability: latency, tokens, cost, prompt version per agent)]
+    O --> OBS[(Observability: agent and retrieval traces)]
 ```
 
 ## Layers
@@ -68,6 +70,25 @@ flowchart TD
    always run; `balanced` mode uses the LLM only to review suspicious
    excerpts, while explicit `strict` mode reviews all page text in bounded
    batches. The model cannot override the deterministic routing policy.
+7. **Retrieval provenance by construction**: each agent trace retains every
+   query's raw top-k ranking and separately marks the deduplicated chunks that
+   reached the prompt. Full chunk text and vectors are excluded from run JSONL;
+   SHA-256 hashes support integrity checks, and bounded previews are explicit
+   opt-in because run history outlives the uploaded PDF by default.
+
+## Retrieval audit and evaluation
+
+The runtime trace records agent, query and query hash, effective `k`, embedding
+and index versions, query/search latency, raw rank and score, document/chunk ID,
+section, page span, indexed-text hash, and prompt inclusion. The trace remains
+nested under the agent so parallel LangGraph branches cannot lose attribution.
+Embedding and vector-search failures retain attempted queries, successful
+sibling lookups, and the consuming agent's status/error instead of disappearing
+from the audit trail.
+
+Production runs expose descriptive telemetry and citation-to-context coverage.
+Relevance metrics require labels, so Precision@K, Recall@K, HitRate@K, MRR@K,
+and NDCG@K run offline against golden page-range and passage judgments.
 
 ## Prompt-injection routing
 
@@ -91,3 +112,4 @@ Recorded as ADRs in [`docs/adr/`](adr/). Highlights:
 - [0003](adr/0003-chromadb-vector-store.md) - ChromaDB behind a VectorStore port
 - [0004](adr/0004-async-first.md) - Async-first from day one
 - [0010](adr/0010-prompt-injection-security-gate.md) - Pre-index prompt-injection security gate
+- [0011](adr/0011-retrieval-traceability-and-evaluation.md) - Retrieval audit and ranking metrics

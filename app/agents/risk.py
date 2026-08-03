@@ -1,7 +1,7 @@
 """Risk assessment agent."""
 
-from app.agents.base import BaseAgent
-from app.agents.context import format_context, retrieve_for_queries
+from app.agents.base import BaseAgent, BuiltAgentPrompt
+from app.agents.context import format_retrieval_bundle, retrieve_for_queries_with_trace
 from app.llm.base import LLMClient
 from app.prompts.risk import RISK_PROMPT
 from app.rag.pipeline import RagPipeline
@@ -28,22 +28,29 @@ class RiskAssessmentAgent(BaseAgent[RiskAssessment]):
         super().__init__(llm)
         self._rag = rag
 
-    async def build_user_prompt(self, state: object) -> str:
+    async def build_user_prompt(self, state: object) -> BuiltAgentPrompt:
         document = state.document  # type: ignore[attr-defined]
-        retrieved = await retrieve_for_queries(
-            self._rag, doc_id=document.doc_id, queries=RISK_QUERIES
+        bundle = await retrieve_for_queries_with_trace(
+            self._rag,
+            doc_id=document.doc_id,
+            queries=RISK_QUERIES,
+            agent=self.name,
         )
         extraction = state.extraction  # type: ignore[attr-defined]
         analysis = state.legal_analysis  # type: ignore[attr-defined]
-        return self.prompt.render_user(
-            language=document.language,
-            context=format_context(
-                document,
-                retrieved,
-                security_assessment=getattr(state, "security_assessment", None),
+        context, retrievals = format_retrieval_bundle(
+            document,
+            bundle,
+            security_assessment=getattr(state, "security_assessment", None),
+        )
+        return BuiltAgentPrompt(
+            text=self.prompt.render_user(
+                language=document.language,
+                context=context,
+                extraction_json=_dump(extraction),
+                analysis_json=_dump(analysis),
             ),
-            extraction_json=_dump(extraction),
-            analysis_json=_dump(analysis),
+            retrievals=retrievals,
         )
 
 

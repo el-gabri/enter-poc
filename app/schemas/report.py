@@ -27,6 +27,15 @@ class RunMetrics(BaseModel):
     models_used: list[str] = Field(default_factory=list)
     prompt_versions: list[str] = Field(default_factory=list)
     agents_run: int = 0
+    retrieval_queries: int = 0
+    retrieval_results: int = 0
+    retrieval_unique_chunks: int = 0
+    context_chunks: int = 0
+    retrieval_duration_ms: float = 0.0
+    citation_retrieval_coverage: float | None = Field(
+        default=None,
+        description="Fraction of chunk citations present in their producing agent's context",
+    )
 
 
 class LitigationReport(BaseModel):
