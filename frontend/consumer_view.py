@@ -15,24 +15,23 @@ from frontend.api_client import ConsumerApiClient, ConsumerApiError
 
 ISSUE_LABELS = {
     "unauthorized_charge": "Cobrança não reconhecida ou indevida",
-    "fraud": "Fraude ou movimentação não reconhecida",
-    "account_block": "Conta ou valor bloqueado",
+    "fraud": "Fraude, golpe ou compra não reconhecida",
+    "account_block": "Conta, acesso ou valor bloqueado",
     "negative_credit_record": "Negativação indevida",
     "loan_or_interest": "Empréstimo, financiamento ou juros",
-    "service_failure": "Falha na prestação do serviço",
+    "service_failure": "Produto ou serviço com problema",
     "over_indebtedness": "Superendividamento",
-    "other": "Outro problema bancário",
+    "other": "Outro problema de consumo",
 }
 
 FACT_LABELS = {
     "consumer_name": "Nome do consumidor",
-    "bank_name": "Banco ou instituição",
+    "bank_name": "Empresa, fornecedor ou instituição",
     "issue_category": "Tipo de problema",
     "complaint_summary": "Relato do ocorrido",
     "incident_date_or_period": "Data ou período",
     "prior_protocols": "Protocolos anteriores",
     "direct_loss_amount": "Prejuízo material",
-    "requested_compensation_amount": "Compensação adicional pretendida",
     "unsuccessful_scenario_cost_amount": "Custo estimado se não houver acordo",
     "desired_resolution": "Solução pretendida",
 }
@@ -69,7 +68,7 @@ def render_consumer_app(api_url: str) -> None:
     client = ConsumerApiClient(api_url)
     connected = _render_sidebar(client, api_url)
 
-    st.title("Assistente para reclamações bancárias")
+    st.title("Assistente para reclamações")
     st.caption(
         "Organize os fatos e as provas para gerar uma notificação extrajudicial "
         "com proposta de acordo — não uma ação judicial."
@@ -219,7 +218,7 @@ def _render_onboarding(client: ConsumerApiClient) -> None:
         st.markdown(
             "1. Conte o problema em suas palavras.\n"
             "2. Confirme os fatos organizados pelo assistente.\n"
-            "3. Envie PDFs que sustentem o relato.\n"
+            "3. Envie PDFs ou imagens que sustentem o relato.\n"
             "4. Revise e baixe a notificação e a memória de cálculo."
         )
         st.caption(
@@ -332,8 +331,8 @@ def _render_conversation_and_summary(case: dict[str, Any]) -> None:
             if not messages:
                 with st.chat_message("assistant"):
                     st.write(
-                        "Conte o que aconteceu com o banco, quando ocorreu e qual "
-                        "solução você procura."
+                        "Conte o que aconteceu, com qual empresa ou fornecedor, "
+                        "e qual solução você procura."
                     )
             for message in messages:
                 if not isinstance(message, dict):
@@ -348,12 +347,12 @@ def _render_conversation_and_summary(case: dict[str, Any]) -> None:
         st.subheader("Resumo do caso")
         with st.container(border=True, height=360):
             facts = case.get("facts") or {}
-            bank = facts.get("bank_name") or "Não informado"
+            supplier = facts.get("bank_name") or "Não informado"
             category = ISSUE_LABELS.get(
                 str(facts.get("issue_category")),
                 facts.get("issue_category") or "Não definido",
             )
-            st.markdown(f"**Instituição:** {bank}")
+            st.markdown(f"**Empresa ou fornecedor:** {supplier}")
             st.markdown(f"**Problema:** {category}")
             if summary := facts.get("complaint_summary"):
                 st.caption(str(summary)[:500])
@@ -383,96 +382,105 @@ def _render_facts_form(
 ) -> None:
     st.subheader("Confirme os fatos")
     st.caption(
-        "O assistente extrai apenas o que foi informado. Corrija qualquer campo "
-        "antes de gerar o documento."
+        "Priorize o resumo do ocorrido e a solução esperada. O assistente usa "
+        "os documentos anexados para sustentar o rascunho."
     )
     facts = case.get("facts") or {}
     _sync_fact_widgets(case, facts)
 
     with st.form("consumer_facts_form"):
-        consumer_name = st.text_input(
+        name_column, supplier_column = st.columns(2)
+        consumer_name = name_column.text_input(
             "Seu nome completo",
             key="consumer_fact_consumer_name",
         )
-        bank_name = st.text_input(
-            "Banco ou instituição financeira",
+        supplier_name = supplier_column.text_input(
+            "Empresa, fornecedor ou instituição",
             key="consumer_fact_bank_name",
         )
-        issue_category = st.selectbox(
+        complaint_summary = st.text_area(
+            "Resumo do ocorrido",
+            key="consumer_fact_complaint_summary",
+            height=160,
+            help="Conte em suas palavras o que aconteceu, em ordem aproximada.",
+        )
+        desired_resolution = st.text_area(
+            "Qual solução você espera?",
+            key="consumer_fact_desired_resolution",
+            height=110,
+            help="Por exemplo: estorno, troca, cancelamento, reparo ou regularização.",
+        )
+
+        category_column, date_column = st.columns(2)
+        issue_category = category_column.selectbox(
             "Tipo principal do problema",
             options=list(ISSUE_LABELS),
             format_func=lambda value: ISSUE_LABELS.get(value, value),
             key="consumer_fact_issue_category",
         )
-        complaint_summary = st.text_area(
-            "Resumo do ocorrido",
-            key="consumer_fact_complaint_summary",
-            height=140,
-        )
-        date_column, deadline_column = st.columns(2)
         incident_period = date_column.text_input(
             "Data ou período do ocorrido",
             key="consumer_fact_incident_date_or_period",
+            help="Pode ser uma data aproximada.",
         )
-        response_deadline = deadline_column.number_input(
-            "Prazo de resposta (dias úteis)",
-            min_value=1,
-            max_value=30,
-            step=1,
-            key="consumer_fact_response_deadline_business_days",
-        )
-        prior_protocols = st.text_area(
-            "Protocolos e reclamações anteriores (um por linha)",
-            key="consumer_fact_prior_protocols",
-            height=90,
-        )
-        amount_column, paid_column = st.columns(2)
-        direct_loss = amount_column.number_input(
-            "Prejuízo direto (R$)",
-            min_value=0.0,
-            step=100.0,
-            format="%.2f",
-            key="consumer_fact_direct_loss_amount",
-        )
-        improper_payment = paid_column.number_input(
-            "Valor efetivamente pago em cobrança contestada (R$)",
-            min_value=0.0,
-            step=100.0,
-            format="%.2f",
-            key="consumer_fact_improper_payment_amount",
-            help="Use somente a parte do prejuízo que foi paga em uma cobrança que você contesta.",
-        )
-        additional_compensation = st.number_input(
-            "Compensação adicional pretendida (R$)",
-            min_value=0.0,
-            step=100.0,
-            format="%.2f",
-            key="consumer_fact_requested_compensation_amount",
-        )
-        unsuccessful_cost = st.number_input(
-            "Custo estimado se não houver acordo (R$)",
-            min_value=0.0,
-            step=100.0,
-            format="%.2f",
-            key="consumer_fact_unsuccessful_scenario_cost_amount",
-            help=(
-                "Opcional. Informe somente custos que você estimou explicitamente; "
-                "o sistema não presume custas, honorários ou duração de um processo."
-            ),
-        )
-        article_42_requested = st.checkbox(
-            "Quero que o cenário avalie, de forma condicional, a repetição em dobro do valor pago",
-            key="consumer_fact_article_42_double_repayment_requested",
-            help=(
-                "A devolução em dobro depende dos requisitos legais e não é aplicada "
-                "automaticamente pelo sistema."
-            ),
-        )
-        desired_resolution = st.text_area(
-            "Qual solução você espera do banco?",
-            key="consumer_fact_desired_resolution",
-            height=90,
-        )
+
+        with st.expander("Detalhes adicionais (opcional)"):
+            st.caption(
+                "Preencha apenas o que souber. Esses dados ajudam no cálculo e "
+                "na organização da notificação."
+            )
+            prior_protocols = st.text_area(
+                "Protocolos e reclamações anteriores (um por linha)",
+                key="consumer_fact_prior_protocols",
+                height=80,
+            )
+            amount_column, paid_column = st.columns(2)
+            direct_loss = amount_column.number_input(
+                "Prejuízo direto (R$)",
+                min_value=0.0,
+                step=100.0,
+                format="%.2f",
+                key="consumer_fact_direct_loss_amount",
+            )
+            improper_payment = paid_column.number_input(
+                "Valor pago em cobrança contestada (R$)",
+                min_value=0.0,
+                step=100.0,
+                format="%.2f",
+                key="consumer_fact_improper_payment_amount",
+                help=(
+                    "Informe somente a parte do prejuízo efetivamente paga "
+                    "em uma cobrança contestada."
+                ),
+            )
+            cost_column, deadline_column = st.columns(2)
+            unsuccessful_cost = cost_column.number_input(
+                "Custo estimado se não houver acordo (R$)",
+                min_value=0.0,
+                step=100.0,
+                format="%.2f",
+                key="consumer_fact_unsuccessful_scenario_cost_amount",
+                help=(
+                    "Informe somente custos estimados por você. O sistema não "
+                    "presume custas, honorários ou duração de um processo."
+                ),
+            )
+            response_deadline = deadline_column.number_input(
+                "Prazo de resposta (dias úteis)",
+                min_value=1,
+                max_value=30,
+                step=1,
+                key="consumer_fact_response_deadline_business_days",
+            )
+            article_42_requested = st.checkbox(
+                "Avaliar, de forma condicional, a devolução em dobro do valor pago",
+                key="consumer_fact_article_42_double_repayment_requested",
+                help=(
+                    "A devolução em dobro depende dos requisitos legais e não "
+                    "é aplicada automaticamente."
+                ),
+            )
+
         confirmed = st.checkbox(
             "Confirmo que este resumo corresponde ao meu relato e não contém informação inventada",
             key="consumer_fact_confirmed",
@@ -486,27 +494,32 @@ def _render_facts_form(
 
     if not submitted:
         return
-    if not bank_name.strip() or not complaint_summary.strip():
-        st.error("Informe ao menos a instituição e o resumo do ocorrido.")
+    if not supplier_name.strip() or not complaint_summary.strip() or not desired_resolution.strip():
+        st.error("Informe a empresa ou fornecedor, o resumo do ocorrido e a solução esperada.")
         return
 
+    stored_loss = float(facts.get("direct_loss_amount") or 0.0)
+    retained_loss_reference = (
+        facts.get("direct_loss_reference_id")
+        if abs(float(direct_loss) - stored_loss) < 0.005
+        else None
+    )
     payload = {
         "consumer_name": consumer_name.strip() or None,
-        "bank_name": bank_name.strip(),
+        # Legacy API key retained for compatibility; semantically this is the supplier.
+        "bank_name": supplier_name.strip(),
         "issue_category": issue_category,
         "complaint_summary": complaint_summary.strip(),
         "incident_date_or_period": incident_period.strip() or None,
         "prior_protocols": _split_protocols(prior_protocols),
         "direct_loss_amount": float(direct_loss) if direct_loss else None,
+        "direct_loss_reference_id": retained_loss_reference,
         "improper_payment_amount": (float(improper_payment) if improper_payment else None),
         "article_42_double_repayment_requested": bool(article_42_requested),
-        "requested_compensation_amount": (
-            float(additional_compensation) if additional_compensation else None
-        ),
         "unsuccessful_scenario_cost_amount": (
             float(unsuccessful_cost) if unsuccessful_cost else None
         ),
-        "desired_resolution": desired_resolution.strip() or None,
+        "desired_resolution": desired_resolution.strip(),
         "response_deadline_business_days": int(response_deadline),
         "facts_confirmed": bool(confirmed),
     }
@@ -532,7 +545,6 @@ def _sync_fact_widgets(case: dict[str, Any], facts: dict[str, Any]) -> None:
         "consumer_fact_direct_loss_amount",
         "consumer_fact_improper_payment_amount",
         "consumer_fact_article_42_double_repayment_requested",
-        "consumer_fact_requested_compensation_amount",
         "consumer_fact_unsuccessful_scenario_cost_amount",
         "consumer_fact_desired_resolution",
         "consumer_fact_response_deadline_business_days",
@@ -558,9 +570,6 @@ def _sync_fact_widgets(case: dict[str, Any], facts: dict[str, Any]) -> None:
         "consumer_fact_improper_payment_amount": float(facts.get("improper_payment_amount") or 0.0),
         "consumer_fact_article_42_double_repayment_requested": bool(
             facts.get("article_42_double_repayment_requested")
-        ),
-        "consumer_fact_requested_compensation_amount": float(
-            facts.get("requested_compensation_amount") or 0.0
         ),
         "consumer_fact_unsuccessful_scenario_cost_amount": float(
             facts.get("unsuccessful_scenario_cost_amount") or 0.0
@@ -594,16 +603,20 @@ def _render_evidence_section(
     for document in documents:
         if isinstance(document, dict):
             _render_document(document)
+    _render_monetary_candidate_confirmation(client, case_id, token, case)
 
     upload_key = f"consumer_evidence_{st.session_state.consumer_upload_generation}"
     with st.form("consumer_evidence_upload"):
         uploads = st.file_uploader(
-            "Envie comprovantes em PDF",
-            type=["pdf"],
+            "Envie comprovantes em PDF, PNG ou JPG",
+            type=["pdf", "png", "jpg", "jpeg"],
             accept_multiple_files=True,
             max_upload_size=20,
             key=upload_key,
-            help="Exemplos: extrato, fatura, contrato, protocolo e resposta do banco.",
+            help=(
+                "Exemplos: nota fiscal, contrato, fatura, captura de tela, "
+                "conversa, protocolo ou resposta da empresa."
+            ),
         )
         st.caption(
             "Cada arquivo passa por varredura de instruções maliciosas antes de "
@@ -618,7 +631,7 @@ def _render_evidence_section(
     if not submitted:
         return
     if not uploads:
-        st.warning("Selecione ao menos um PDF.")
+        st.warning("Selecione ao menos um arquivo PDF, PNG ou JPG.")
         return
 
     failures: list[str] = []
@@ -684,6 +697,101 @@ def _render_document(document: dict[str, Any]) -> None:
             )
 
 
+def _render_monetary_candidate_confirmation(
+    client: ConsumerApiClient,
+    case_id: str,
+    token: str,
+    case: dict[str, Any],
+) -> None:
+    candidates: dict[str, dict[str, Any]] = {}
+    for document in case.get("documents") or []:
+        if not isinstance(document, dict):
+            continue
+        for reference in document.get("monetary_references") or []:
+            if not isinstance(reference, dict):
+                continue
+            reference_id = str(reference.get("reference_id") or "")
+            if not reference_id:
+                continue
+            candidates[reference_id] = {
+                **reference,
+                "filename": document.get("filename") or "Documento",
+            }
+    if not candidates:
+        return
+
+    facts = case.get("facts") or {}
+    current_reference = str(facts.get("direct_loss_reference_id") or "")
+    options = ["", *candidates]
+    default_index = options.index(current_reference) if current_reference in options else 0
+
+    with st.expander(
+        "Valores encontrados nos documentos",
+        expanded=not bool(facts.get("direct_loss_amount")),
+    ):
+        st.caption(
+            "O assistente encontrou valores explícitos. Selecione apenas o que realmente "
+            "corresponde ao seu prejuízo; isso não define a compensação ou indenização."
+        )
+        with st.form("consumer_monetary_candidate_form"):
+            selected = st.selectbox(
+                "Valor documentado",
+                options=options,
+                index=default_index,
+                format_func=lambda reference_id: (
+                    "Não selecionar agora"
+                    if not reference_id
+                    else _monetary_candidate_label(candidates[reference_id])
+                ),
+            )
+            confirmed = st.checkbox(
+                "Confirmo que o valor selecionado corresponde ao meu prejuízo direto"
+            )
+            submitted = st.form_submit_button(
+                "Usar no cálculo",
+                icon=":material/check:",
+                width="stretch",
+            )
+
+    if not submitted:
+        return
+    if not selected:
+        st.warning("Selecione um valor documentado.")
+        return
+    if not confirmed:
+        st.warning("Confirme que o valor corresponde ao prejuízo direto.")
+        return
+
+    candidate = candidates[selected]
+    try:
+        updated = client.update_facts(
+            case_id,
+            token,
+            {
+                "direct_loss_amount": float(candidate["amount"]),
+                "direct_loss_reference_id": selected,
+            },
+        )
+    except ConsumerApiError as exc:
+        st.error(str(exc))
+        return
+    _store_case(_case_from_payload(updated))
+    _set_flash(
+        "success",
+        "Valor documentado registrado. Revise e confirme os fatos antes de gerar.",
+    )
+    st.rerun()
+
+
+def _monetary_candidate_label(candidate: dict[str, Any]) -> str:
+    amount = _format_brl(float(candidate.get("amount") or 0.0))
+    filename = str(candidate.get("filename") or "Documento")
+    page = int(candidate.get("page") or 1)
+    quote = " ".join(str(candidate.get("quote") or "").split())
+    suffix = f" — {quote[:90]}" if quote else ""
+    return f"{amount} · {filename}, p. {page}{suffix}"
+
+
 def _render_generation_section(
     client: ConsumerApiClient,
     case_id: str,
@@ -709,7 +817,7 @@ def _render_generation_section(
 
     if not usable_documents:
         st.warning(
-            "É necessário ao menos um PDF aceito pela varredura de segurança. "
+            "É necessário ao menos um documento aceito pela varredura de segurança. "
             "O sistema não gera uma notificação que apresente alegações sem suporte "
             "documental como fatos comprovados."
         )
@@ -953,20 +1061,17 @@ def _render_settlement_scenario(scenario: dict[str, Any]) -> None:
             st.metric("Piso de negociação", _format_brl(floor), border=True)
 
     if downside:
-        st.caption(
-            f"Custo explícito informado para o cenário sem acordo: {_format_brl(downside)}."
-        )
+        st.caption(f"Custo explícito informado para o cenário sem acordo: {_format_brl(downside)}.")
 
     st.warning(
         "Esses pesos não são probabilidades jurídicas calibradas. O resultado é um cenário de "
-        "negociação baseado nos valores informados, na completude do relato e nas "
+        "negociação baseado nos valores confirmados, na completude do relato e nas "
         "evidências disponíveis."
     )
     amount_rows = []
     for label, key in (
-        ("Prejuízo direto informado", "direct_loss_amount"),
+        ("Prejuízo direto confirmado", "direct_loss_amount"),
         ("Valor pago em cobrança contestada", "improper_payment_amount"),
-        ("Compensação adicional informada", "requested_compensation_amount"),
         ("Incremento condicional do art. 42", "conditional_article_42_increment_amount"),
         ("Resultado ilustrativo inferior", "low_outcome_value"),
         ("Resultado ilustrativo superior", "high_outcome_value"),
@@ -976,6 +1081,12 @@ def _render_settlement_scenario(scenario: dict[str, Any]) -> None:
             amount_rows.append({"Componente": label, "Valor": _format_brl(value)})
     if amount_rows:
         st.table(amount_rows)
+    source_rows = _financial_source_rows(scenario)
+    if source_rows:
+        with st.expander("Origem dos valores usados no cálculo"):
+            st.caption("Cada componente mostra o fato confirmado ou o documento que o sustenta.")
+            st.dataframe(source_rows, hide_index=True, width="stretch")
+
     if assumption := scenario.get("article_42_assumption"):
         st.caption(str(assumption))
     methodology = scenario.get("methodology")
@@ -988,6 +1099,55 @@ def _render_settlement_scenario(scenario: dict[str, Any]) -> None:
         st.markdown("**Limitações**")
         for item in caveats:
             st.markdown(f"- {item}")
+    if calculation_hash := scenario.get("calculation_sha256"):
+        st.caption(f"SHA-256 do cálculo: `{calculation_hash}`")
+
+
+def _financial_source_rows(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten monetary component provenance for human-readable audit."""
+    labels = {
+        "direct_loss": "Prejuízo direto",
+        "conditional_article_42": "Acréscimo condicional do art. 42",
+        "downside_cost": "Custo do cenário sem acordo",
+    }
+    rows: list[dict[str, Any]] = []
+    for component in scenario.get("components") or []:
+        if not isinstance(component, dict):
+            continue
+        kind = str(component.get("kind") or "")
+        amount = _number(component, "amount")
+        for source in component.get("sources") or []:
+            if not isinstance(source, dict):
+                continue
+            source_type = str(source.get("source_type") or "")
+            filename = str(source.get("filename") or "")
+            page = source.get("page")
+            if filename:
+                location = f"{filename}, p. {page}" if page else filename
+            else:
+                location = "Formulário confirmado"
+            extraction = str(source.get("extraction_method") or "manual")
+            if source.get("ocr_applied"):
+                extraction = f"{extraction} + OCR"
+            rows.append(
+                {
+                    "Componente": labels.get(kind, kind or "Valor"),
+                    "Valor": _format_brl(amount) if amount is not None else "—",
+                    "Incluído na proposta": bool(component.get("included_in_public_proposal")),
+                    "Origem": (
+                        "Documento"
+                        if source_type == "evidence"
+                        else "Fato confirmado pelo consumidor"
+                    ),
+                    "Arquivo/página": location,
+                    "Trecho": str(source.get("quote") or ""),
+                    "Extração": extraction,
+                    "SHA-256 do arquivo": str(source.get("source_sha256") or "—"),
+                    "SHA-256 do texto": str(source.get("content_sha256") or "—"),
+                    "SHA-256 do trecho": str(source.get("quote_sha256") or "—"),
+                }
+            )
+    return rows
 
 
 def _render_consumer_audit(notice: dict[str, Any]) -> None:
@@ -1025,7 +1185,7 @@ def _render_consumer_audit(notice: dict[str, Any]) -> None:
 
     st.caption(
         "A auditoria identifica os trechos recuperados e se foram incluídos no "
-        "contexto. Conteúdo dos PDFs é tratado como dado não confiável, nunca como "
+        "contexto. O conteúdo dos arquivos é tratado como dado não confiável, nunca como "
         "instrução para o assistente."
     )
 

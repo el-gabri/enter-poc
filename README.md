@@ -36,9 +36,12 @@ The existing **business** journey remains the lawsuit-analysis workflow above.
 Legal teams upload an incoming petition, assess exposure and prepare an initial
 defense and settlement posture.
 
-The **consumer** journey is a separate, bank-first workflow. A guided chat
-structures the complaint, identifies missing facts and asks for supporting PDF
-evidence. Every upload passes through the same prompt-injection security gate.
+The **consumer** journey is a separate workflow for complaints against
+suppliers, companies or institutions. A guided chat structures the complaint
+and accepts supporting PDF, PNG and JPEG evidence.
+Every upload passes through the prompt-injection security gate. Images and
+scanned PDFs are accepted only when OCR produces reviewable text; unreadable
+files are rejected instead of being treated as supporting evidence.
 The assistant then retrieves relevant, versioned summaries of provisions from
 the [Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicao.htm)
 and the [Consumer Defense Code (CDC)](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm),
@@ -48,9 +51,15 @@ auditable draft for export.
 The generated artifact is a **notificação extrajudicial com proposta de
 acordo** (extrajudicial notice with a settlement proposal), not a lawsuit or a
 court filing. Its financial section is a transparent scenario calculation
-based on user-confirmed losses, no-agreement costs and explicit assumptions;
-it does not claim calibrated odds of winning or invent a damages award. The
-system never sends or files the notice. A qualified Brazilian lawyer must
+based on confirmed losses, optional no-agreement costs and explicit assumptions.
+The user does not choose an additional compensation amount. Explicit values
+found in evidence are shown as candidates and enter the calculation only after
+the consumer confirms which one is the factual loss. Amounts mentioned in chat
+remain part of the untrusted narrative and are never promoted automatically to
+confirmed losses. The interface exposes each financial component's source,
+excerpt and hashes for audit. The calculator then produces an auditable
+negotiation proposal without claiming calibrated odds.
+The system never sends or files the notice. A qualified Brazilian lawyer must
 review it before use.
 
 ## Architecture
@@ -173,26 +182,32 @@ docker compose up --build
 
 ```bash
 python -m venv .venv && .venv\Scripts\activate    # Windows
-pip install -e ".[dev,frontend]"
+pip install -e ".[dev,frontend,ocr]"
 copy .env.example .env
-pytest                                            # 50+ tests, fully offline
+pytest                                            # fully offline
 
 uvicorn app.api.main:app --reload                 # terminal 1
 streamlit run frontend/streamlit_app.py           # terminal 2
 ```
+Local OCR for images and scanned PDFs also requires the Tesseract system binary
+and Portuguese language data. The API Docker image already installs both.
 
 No API key? Set `LITIGATION_LLM_PROVIDER=mock` - the entire product runs
 offline with deterministic outputs (also how CI works).
 
 ### Document handling
 
-Uploads are streamed with a 20 MB API limit and the ingestion layer rejects
-PDFs above `LITIGATION_MAX_DOCUMENT_PAGES` (250 by default). Raw uploaded
-PDFs are deleted after analysis by default; set `LITIGATION_RETAIN_UPLOADS=true`
-only when an explicit retention policy requires it. ChromaDB and run history
-remain persistent storage and should be protected with authentication,
-tenant isolation and an operational retention policy before real case data is
-used.
+Uploads are streamed with a 20 MB API limit. The business journey remains
+PDF-only and rejects files above `LITIGATION_MAX_DOCUMENT_PAGES` (250 by
+default). Consumer evidence accepts PDF, PNG and JPEG; images above 40
+megapixels are rejected before raster decoding. Images and scanned PDFs without
+usable OCR text are also rejected.
+Raw consumer evidence is always deleted immediately after ingestion. Business
+PDFs are deleted after analysis by default; set
+`LITIGATION_RETAIN_UPLOADS=true` only when an explicit retention policy
+requires it. ChromaDB and run history remain persistent storage and should be
+protected with authentication, tenant isolation and an operational retention
+policy before real case data is used.
 
 ## Project structure
 
@@ -202,7 +217,7 @@ app/
 ├── consumer/       guided intake · legal corpus · evidence · notice composer
 ├── llm/            LLMClient port · OpenAI + Mock adapters · pricing
 ├── schemas/        typed contracts for every layer (the domain model)
-├── ingestion/      PDF -> text, OCR fallback, language detection
+├── ingestion/      PDF/image -> text, OCR fallback, language detection
 ├── security/       prompt-injection scanning, policy and safe context masking
 ├── rag/            section-aware chunker · embeddings port · vector store port
 ├── agents/         classifier · extraction · legal analysis · risk · strategy

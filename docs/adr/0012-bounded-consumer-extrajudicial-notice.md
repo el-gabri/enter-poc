@@ -5,7 +5,7 @@ Status: accepted · Date: 2026-08-04
 ## Context
 
 The product originally supports companies receiving a lawsuit. A second
-journey can help a consumer organize a dispute with a bank, connect evidence
+journey can help a consumer organize a dispute with a supplier, connect evidence
 to applicable consumer protections and prepare a settlement request without
 removing or weakening the business workflow.
 
@@ -18,10 +18,10 @@ scope of this demonstration.
 
 ## Decision
 
-1. Add a separate, bank-first consumer mode while preserving the existing
-   business mode. Bound the first consumer intake to the complaint, institution,
+1. Add a separate consumer mode while preserving the existing
+   business mode. Bound the first consumer intake to the complaint, supplier,
    relevant dates, prior protocols, user-confirmed loss, desired resolution and
-   supporting PDF evidence. Do not silently infer absent facts.
+   supporting PDF or image evidence. Do not silently infer absent facts.
 2. Produce a **notificação extrajudicial com proposta de acordo**, not a
    lawsuit, initial petition or court filing. The application only creates an
    exportable draft; it does not send, file or represent the consumer. A human
@@ -35,24 +35,31 @@ scope of this demonstration.
    URL, corpus release, verification date and content hash. Summaries are
    navigation aids, not substitutes for the official text, and a corpus release
    must not mix legal versions.
-4. Keep two provenance chains. Evidence references identify the uploaded file,
-   page and retrieved chunk supporting a factual assertion. Legal references
-   identify the provision, corpus release and official source supporting a
-   legal ground. The notice composer cannot convert one type into the other or
-   cite material that was not supplied to it.
-5. Treat chat messages, PDFs and retrieved passages as untrusted data. Scan
+4. Keep distinct provenance chains. Evidence references identify the original
+   file hash, extracted-text hash, page and retrieved chunk supporting a factual
+   assertion. Financial components point either to a consumer-confirmed fact or
+   to a selected monetary candidate with file, page, excerpt and hashes. Legal
+   references identify the provision, corpus release and official source
+   supporting a legal ground. The notice composer cannot convert one type into
+   another or cite material that was not supplied to it.
+5. Treat chat messages, uploaded documents and retrieved passages as untrusted
+   data. Scan
    every uploaded document before indexing. Quarantine documents that require
    review or are blocked by the deterministic prompt-injection policy; mask
    flagged medium-risk excerpts from downstream prompts while retaining the
    finding for audit. Document text cannot change system policy or authorize an
    external action.
-6. Calculate settlement values as transparent scenarios. Use only
-   user-confirmed monetary inputs and labeled assumptions, show the formula and
-   ranges, and distinguish direct restitution from any optional additional
-   amount. A success likelihood, when included in an expected-value scenario,
-   is an explicit scenario assumption rather than a model-inferred or
-   calibrated win probability. Do not infer damages from the Constitution or
-   CDC.
+6. Calculate settlement values as transparent scenarios. Monetary values found
+   by text extraction or OCR are candidates only and require explicit consumer
+   confirmation before use. The public proposal is limited to the confirmed
+   Amounts mentioned in chat remain unconfirmed narrative and must not be
+   promoted automatically to calculation inputs.
+   direct loss plus any clearly labeled, conditional legal increment; it does
+   not accept a consumer-selected additional compensation amount. Preserve the
+   formula, component sources and a canonical calculation hash. A success
+   likelihood, when included in an expected-value scenario, is an explicit
+   scenario assumption rather than a model-inferred or calibrated win
+   probability. Do not infer damages from the Constitution or CDC.
 7. Assemble the final notice deterministically from confirmed facts, accepted
    evidence and retrieved legal grounds. Mark uncertainty and missing evidence
    rather than asking the language model to fill gaps. Exports carry the review
@@ -78,7 +85,7 @@ scope of this demonstration.
   release to be withdrawn when legislation changes.
 - (+) Scenario calculations expose assumptions and remain useful before a
   defensible outcome model exists.
-- (-) The bank-first scope will not cover every consumer dispute, procedural
+- (-) The initial category set will not cover every consumer dispute, procedural
   remedy, limitation issue or jurisdiction-specific practice.
 - (-) Curated summaries require legal review and ongoing version maintenance;
   links to official sources do not automate that governance.

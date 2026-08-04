@@ -16,7 +16,7 @@ async def test_upload_is_written_in_chunks(tmp_path: Path) -> None:
 
     header = await _write_upload_in_chunks(upload, path, max_upload_bytes=1024)
 
-    assert header == b"%PDF"
+    assert header.startswith(b"%PDF")
     assert path.read_bytes() == b"%PDF-1.7 content"
 
 

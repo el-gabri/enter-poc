@@ -8,7 +8,6 @@ advice or documentary evidence.
 from __future__ import annotations
 
 import re
-from decimal import Decimal, InvalidOperation
 
 from app.consumer.schemas import (
     ConsumerCaseFacts,
@@ -16,10 +15,6 @@ from app.consumer.schemas import (
     ConsumerIssueCategory,
 )
 
-_MONEY_RE = re.compile(
-    r"R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)",
-    re.IGNORECASE,
-)
 _DATE_RE = re.compile(
     r"\b(?:\d{1,2}/\d{1,2}/\d{2,4}|"
     r"(?:janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|"
@@ -35,6 +30,71 @@ _GENERIC_BANK_RE = re.compile(
     r"\b(?:banco|instituiç[aã]o financeira)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][\wÀ-ÿ.-]*"
     r"(?:\s+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][\wÀ-ÿ.-]*){0,3})"
 )
+_GENERIC_SUPPLIER_PREFIX_RE = re.compile(
+    r"\b(?:empresa|loja|fornecedor(?:a)?|operadora|plataforma|site|aplicativo)\s+",
+    re.IGNORECASE,
+)
+_SUPPLIER_TOKEN_RE = re.compile(r"[0-9A-Za-zÀ-ÿ&]+(?:[.-][0-9A-Za-zÀ-ÿ&]+)*")
+_SUPPLIER_NAME_CONNECTORS = frozenset({"da", "das", "de", "do", "dos", "e"})
+_SUPPLIER_STOP_WORDS = frozenset(
+    [
+        "a",
+        "agora",
+        "após",
+        "atrasou",
+        "bloqueou",
+        "cancelou",
+        "cobrou",
+        "com",
+        "debitou",
+        "desde",
+        "deve",
+        "deveria",
+        "disse",
+        "ela",
+        "ele",
+        "em",
+        "entregou",
+        "enviou",
+        "era",
+        "está",
+        "estornou",
+        "é",
+        "fez",
+        "foi",
+        "informou",
+        "isso",
+        "já",
+        "mas",
+        "me",
+        "não",
+        "nao",
+        "negou",
+        "nos",
+        "novamente",
+        "o",
+        "onde",
+        "para",
+        "pois",
+        "por",
+        "porque",
+        "prometeu",
+        "quando",
+        "que",
+        "realizou",
+        "recusou",
+        "resolveu",
+        "respondeu",
+        "sem",
+        "simplesmente",
+        "suspendeu",
+        "tem",
+        "uma",
+        "vendeu",
+    ]
+)
+_MAX_SUPPLIER_NAME_TOKENS = 4
+
 
 _CATEGORY_TERMS: tuple[tuple[ConsumerIssueCategory, tuple[str, ...]], ...] = (
     (
@@ -63,7 +123,17 @@ _CATEGORY_TERMS: tuple[tuple[ConsumerIssueCategory, tuple[str, ...]], ...] = (
     ),
     (
         ConsumerIssueCategory.SERVICE_FAILURE,
-        ("falha", "serviço", "servico", "atendimento", "indisponível", "indisponivel"),
+        (
+            "falha",
+            "serviço",
+            "servico",
+            "atendimento",
+            "indisponível",
+            "indisponivel",
+            "não entreg",
+            "nao entreg",
+            "produto com defeito",
+        ),
     ),
 )
 
@@ -71,7 +141,7 @@ _RECOMMENDED_DOCUMENTS: dict[ConsumerIssueCategory, list[str]] = {
     ConsumerIssueCategory.UNAUTHORIZED_CHARGE: [
         "extrato ou fatura com a cobrança destacada",
         "comprovante do pagamento, se houve",
-        "protocolos e respostas do banco",
+        "protocolos e respostas da empresa ou instituição",
     ],
     ConsumerIssueCategory.FRAUD: [
         "extrato com as transações contestadas",
@@ -81,7 +151,7 @@ _RECOMMENDED_DOCUMENTS: dict[ConsumerIssueCategory, list[str]] = {
     ConsumerIssueCategory.ACCOUNT_BLOCK: [
         "comunicação ou tela que mostre o bloqueio",
         "extrato do saldo afetado",
-        "protocolos e respostas do banco",
+        "protocolos e respostas da empresa ou instituição",
     ],
     ConsumerIssueCategory.NEGATIVE_CREDIT_RECORD: [
         "consulta do cadastro restritivo com data e credor",
@@ -105,7 +175,7 @@ _RECOMMENDED_DOCUMENTS: dict[ConsumerIssueCategory, list[str]] = {
     ],
     ConsumerIssueCategory.OTHER: [
         "contrato, fatura ou extrato relacionado",
-        "protocolos e respostas do banco",
+        "protocolos e respostas da empresa ou instituição",
         "comprovantes do prejuízo alegado",
     ],
 }
@@ -121,20 +191,15 @@ def extract_explicit_facts(text: str, current: ConsumerCaseFacts) -> ConsumerInt
     normalized = " ".join(text.split())
     lowered = normalized.casefold()
     category = _classify(lowered) if current.issue_category is None else None
-    bank_name = _extract_bank(normalized) if current.bank_name is None else None
+    bank_name = _extract_supplier(normalized) if current.bank_name is None else None
     period = None
     if current.incident_date_or_period is None and (match := _DATE_RE.search(normalized)):
         period = match.group(0)
-    amount = None
-    if current.direct_loss_amount is None and (match := _MONEY_RE.search(normalized)):
-        amount = _parse_brl(match.group(1))
-
     return ConsumerIntakeExtraction(
         bank_name=bank_name,
         issue_category=category,
         complaint_summary=(normalized if current.complaint_summary is None else None),
         incident_date_or_period=period,
-        direct_loss_amount=amount,
         desired_resolution=(
             normalized
             if current.desired_resolution is None
@@ -164,28 +229,28 @@ def recommended_documents(category: ConsumerIssueCategory | None) -> list[str]:
 def next_assistant_message(facts: ConsumerCaseFacts, *, has_evidence: bool) -> str:
     """Select one concise next question from deterministic readiness state."""
     questions = {
-        "bank_name": "Qual é o nome do banco ou da instituição financeira?",
+        "bank_name": "Qual é o nome da empresa, fornecedor ou instituição?",
         "consumer_name": "Qual é o seu nome completo para identificar a parte notificante?",
         "issue_category": (
             "Qual tipo de problema ocorreu: cobrança, fraude, bloqueio, "
             "negativação, crédito ou outro?"
         ),
         "complaint_summary": (
-            "Conte, em ordem cronológica, o que aconteceu e o que o banco "
-            "fez ou deixou de fazer."
+            "Conte, em ordem cronológica, o que aconteceu e o que a empresa "
+            "ou fornecedor fez ou deixou de fazer."
         ),
         "incident_date_or_period": (
             "Quando o problema ocorreu? Informe a data ou o período aproximado."
         ),
-        "desired_resolution": "Que solução você quer pedir ao banco?",
+        "desired_resolution": "Qual solução você espera da empresa ou fornecedor?",
     }
     missing = facts.missing_fields()
     if missing:
         return questions[missing[0]]
     if not has_evidence:
         return (
-            "Os fatos essenciais estão preenchidos. Agora envie ao menos um PDF que "
-            "comprove a ocorrência, o valor ou uma tentativa anterior de solução."
+            "Os fatos essenciais estão preenchidos. Agora envie ao menos um PDF ou "
+            "imagem que comprove a ocorrência, o valor ou uma tentativa de solução."
         )
     return (
         "Já há fatos e evidência suficientes para um rascunho. Confira o resumo, "
@@ -200,22 +265,45 @@ def _classify(lowered: str) -> ConsumerIssueCategory:
     return ConsumerIssueCategory.OTHER
 
 
-def _extract_bank(text: str) -> str | None:
+def _extract_supplier(text: str) -> str | None:
     if match := _BANK_RE.search(text):
         return match.group(1).strip().title()
     if match := _GENERIC_BANK_RE.search(text):
         return f"Banco {match.group(1).strip()}"
+    if match := _GENERIC_SUPPLIER_PREFIX_RE.search(text):
+        return _supplier_name_after_prefix(text, match.end())
     return None
 
 
-def _parse_brl(raw: str) -> Decimal | None:
-    if "," in raw:
-        value = raw.replace(".", "").replace(",", ".")
-    elif raw.count(".") == 1 and len(raw.rsplit(".", maxsplit=1)[1]) <= 2:
-        value = raw
-    else:
-        value = raw.replace(".", "")
-    try:
-        return Decimal(value)
-    except InvalidOperation:
+def _supplier_name_after_prefix(text: str, start: int) -> str | None:
+    tokens: list[str] = []
+    previous_end = start
+
+    for match in _SUPPLIER_TOKEN_RE.finditer(text, start):
+        if text[previous_end : match.start()] and not text[previous_end : match.start()].isspace():
+            break
+
+        token = match.group(0)
+        folded = token.casefold()
+        if folded in _SUPPLIER_STOP_WORDS:
+            break
+        if not tokens and folded in _SUPPLIER_NAME_CONNECTORS:
+            break
+
+        tokens.append(token)
+        previous_end = match.end()
+        if len(tokens) == _MAX_SUPPLIER_NAME_TOKENS:
+            break
+
+    while tokens and tokens[-1].casefold() in _SUPPLIER_NAME_CONNECTORS:
+        tokens.pop()
+    if not tokens:
         return None
+
+    name = " ".join(tokens)
+    if name.islower() or name.isupper():
+        return " ".join(
+            part.casefold() if part.casefold() in _SUPPLIER_NAME_CONNECTORS else part.title()
+            for part in tokens
+        )
+    return name

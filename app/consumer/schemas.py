@@ -12,14 +12,15 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.document import ExtractionMethod
 from app.schemas.security import PromptInjectionAssessment
 from app.schemas.trace import RetrievalTrace
 
 
 class ConsumerIssueCategory(str, Enum):
-    """Bank-first complaint categories supported by the initial intake."""
+    """Consumer complaint categories supported by the guided intake."""
 
     UNAUTHORIZED_CHARGE = "unauthorized_charge"
     FRAUD = "fraud"
@@ -41,6 +42,11 @@ class EvidenceStatus(str, Enum):
     ACCEPTED_WITH_WARNING = "accepted_with_warning"
     REVIEW_REQUIRED = "review_required"
     BLOCKED = "blocked"
+
+
+class MonetarySourceType(str, Enum):
+    CONSUMER_CONFIRMED = "consumer_confirmed"
+    EVIDENCE = "evidence"
 
 
 class ConsumerCaseStatus(str, Enum):
@@ -69,18 +75,28 @@ class ConsumerMessage(BaseModel):
 class ConsumerCaseFacts(BaseModel):
     """Facts supplied or explicitly confirmed by the consumer.
 
-    Monetary fields have different meanings and must not be silently merged:
-    direct loss is evidence-backed loss, while requested compensation is the
-    consumer's own negotiation input.
+    Monetary fields have different meanings and must not be silently merged.
+    The primary UI collects losses and optional costs, while the negotiation
+    calculator defines the proposal shown in the generated notice.
     """
 
     consumer_name: str | None = Field(default=None, max_length=200)
-    bank_name: str | None = Field(default=None, max_length=200)
+    bank_name: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Legacy API name for the supplier, company or institution",
+    )
     issue_category: ConsumerIssueCategory | None = None
     complaint_summary: str | None = Field(default=None, max_length=10_000)
     incident_date_or_period: str | None = Field(default=None, max_length=500)
     prior_protocols: list[str] = Field(default_factory=list)
     direct_loss_amount: Decimal | None = Field(default=None, ge=0)
+    direct_loss_reference_id: str | None = Field(
+        default=None,
+        min_length=16,
+        max_length=64,
+        description="Optional evidence-backed candidate explicitly selected by the consumer",
+    )
     improper_payment_amount: Decimal | None = Field(
         default=None,
         ge=0,
@@ -90,17 +106,10 @@ class ConsumerCaseFacts(BaseModel):
         ),
     )
     article_42_double_repayment_requested: bool = False
-    requested_compensation_amount: Decimal | None = Field(
-        default=None,
-        ge=0,
-        description="Consumer-supplied negotiation input; never inferred by the system",
-    )
     unsuccessful_scenario_cost_amount: Decimal | None = Field(
         default=None,
         ge=0,
-        description=(
-            "Consumer-supplied estimate of explicit cost if no agreement is reached"
-        ),
+        description=("Consumer-supplied estimate of explicit cost if no agreement is reached"),
     )
     desired_resolution: str | None = Field(default=None, max_length=2_000)
     response_deadline_business_days: int = Field(default=10, ge=1, le=60)
@@ -143,11 +152,21 @@ class ConsumerIntakeExtraction(BaseModel):
     incident_date_or_period: str | None = None
     prior_protocols: list[str] | None = None
     direct_loss_amount: Decimal | None = Field(default=None, ge=0)
+    direct_loss_reference_id: str | None = None
     improper_payment_amount: Decimal | None = Field(default=None, ge=0)
     article_42_double_repayment_requested: bool | None = None
-    requested_compensation_amount: Decimal | None = Field(default=None, ge=0)
     unsuccessful_scenario_cost_amount: Decimal | None = Field(default=None, ge=0)
     desired_resolution: str | None = None
+
+
+class EvidenceMonetaryReference(BaseModel):
+    """A monetary candidate extracted from evidence, never an automatic loss."""
+
+    reference_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    amount: Decimal = Field(gt=0)
+    page: int = Field(ge=1)
+    quote: str = Field(min_length=1, max_length=300)
+    quote_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ConsumerEvidence(BaseModel):
@@ -155,7 +174,12 @@ class ConsumerEvidence(BaseModel):
     filename: str
     page_count: int = Field(ge=0)
     status: EvidenceStatus
+    media_type: str = Field(pattern=r"^(application/pdf|image/(png|jpeg))$")
+    extraction_method: ExtractionMethod
+    ocr_applied: bool = False
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     content_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    monetary_references: list[EvidenceMonetaryReference] = Field(default_factory=list)
     security_assessment: PromptInjectionAssessment | None = None
     warnings: list[str] = Field(default_factory=list)
 
@@ -252,12 +276,36 @@ class LegalGround(BaseModel):
     application_to_facts: str = Field(min_length=1, max_length=4_000)
 
 
+class SettlementComponentSource(BaseModel):
+    """Traceable source used by one monetary calculation component."""
+
+    source_type: MonetarySourceType
+    evidence_id: str | None = None
+    filename: str | None = None
+    page: int | None = Field(default=None, ge=1)
+    quote: str = Field(min_length=1, max_length=1_000)
+    quote_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    content_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    extraction_method: ExtractionMethod | None = None
+    ocr_applied: bool = False
+
+
+class SettlementComponent(BaseModel):
+    kind: str = Field(pattern=r"^(direct_loss|conditional_article_42|downside_cost)$")
+    amount: Decimal = Field(ge=0)
+    included_in_public_proposal: bool
+    formula: str = Field(min_length=1)
+    sources: list[SettlementComponentSource] = Field(default_factory=list)
+
+
 class SettlementInputs(BaseModel):
     """Explicit inputs to a deterministic, non-predictive negotiation scenario."""
 
+    model_config = ConfigDict(extra="forbid")
+
     direct_loss_amount: Decimal = Field(default=Decimal("0"), ge=0)
     improper_payment_amount: Decimal = Field(default=Decimal("0"), ge=0)
-    requested_compensation_amount: Decimal = Field(default=Decimal("0"), ge=0)
     downside_cost_amount: Decimal = Field(
         default=Decimal("0"),
         ge=0,
@@ -266,19 +314,14 @@ class SettlementInputs(BaseModel):
     article_42_double_repayment_supported: bool = False
     evidence_strength: Decimal = Field(default=Decimal("0.5"), ge=0, le=1)
     factual_completeness: Decimal = Field(default=Decimal("0.5"), ge=0, le=1)
-    public_proposal_override: Decimal | None = Field(default=None, ge=0)
-    private_reservation_override: Decimal | None = Field(default=None, ge=0)
+    direct_loss_sources: list[SettlementComponentSource] = Field(default_factory=list)
+    improper_payment_sources: list[SettlementComponentSource] = Field(default_factory=list)
+    downside_cost_sources: list[SettlementComponentSource] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_inputs(self) -> SettlementInputs:
         if self.improper_payment_amount > self.direct_loss_amount:
             raise ValueError("improper_payment_amount cannot exceed direct_loss_amount")
-        if (
-            self.public_proposal_override is not None
-            and self.private_reservation_override is not None
-            and self.public_proposal_override < self.private_reservation_override
-        ):
-            raise ValueError("public proposal cannot be lower than private reservation")
         return self
 
 
@@ -290,7 +333,6 @@ class SettlementScenario(BaseModel):
     is_legal_outcome_prediction: bool = False
     direct_loss_amount: Decimal = Field(ge=0)
     improper_payment_amount: Decimal = Field(ge=0)
-    requested_compensation_amount: Decimal = Field(ge=0)
     downside_cost_amount: Decimal = Field(ge=0)
     unsuccessful_outcome_value: Decimal
     conditional_article_42_increment_amount: Decimal = Field(ge=0)
@@ -303,6 +345,8 @@ class SettlementScenario(BaseModel):
     public_proposal_amount: Decimal | None = Field(default=None, ge=0)
     private_reservation_amount: Decimal | None = Field(default=None, ge=0)
     article_42_assumption: str
+    components: list[SettlementComponent] = Field(default_factory=list)
+    calculation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     methodology: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
 

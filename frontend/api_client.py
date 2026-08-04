@@ -7,9 +7,17 @@ UI exercises the same public HTTP contract as any other client.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, BinaryIO
 
 import requests
+
+EVIDENCE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
 
 
 @dataclass(slots=True)
@@ -79,11 +87,14 @@ class ConsumerApiClient:
         filename: str,
         file_object: BinaryIO,
     ) -> dict[str, Any]:
+        media_type = EVIDENCE_MEDIA_TYPES.get(Path(filename).suffix.casefold())
+        if media_type is None:
+            raise ConsumerApiError("Formato não suportado. Envie um arquivo PDF, PNG ou JPG.")
         return self._json(
             "POST",
             f"/consumer/cases/{case_id}/documents",
             token=token,
-            files={"file": (filename, file_object, "application/pdf")},
+            files={"file": (filename, file_object, media_type)},
             timeout=120,
         )
 
@@ -166,7 +177,7 @@ class ConsumerApiClient:
                     "Inicie um novo atendimento."
                 )
             elif status_code == 413:
-                detail = "O PDF excede o limite aceito pela API."
+                detail = "O arquivo excede o limite aceito pela API."
             elif status_code == 422 and not detail:
                 detail = "Revise os campos informados e tente novamente."
             elif not detail:

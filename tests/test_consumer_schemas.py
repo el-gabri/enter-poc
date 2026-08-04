@@ -37,14 +37,17 @@ def test_consumer_facts_report_only_drafting_critical_gaps() -> None:
     assert complete.missing_fields() == []
 
 
-def test_consumer_facts_do_not_merge_loss_and_requested_compensation() -> None:
+def test_consumer_facts_keep_selected_evidence_value_reference() -> None:
     facts = ConsumerCaseFacts(
         direct_loss_amount=Decimal("200"),
-        requested_compensation_amount=Decimal("1_000"),
+        direct_loss_reference_id="a" * 24,
     )
 
     assert facts.direct_loss_amount == Decimal("200")
-    assert facts.requested_compensation_amount == Decimal("1_000")
+    assert facts.direct_loss_reference_id == "a" * 24
+
+    with pytest.raises(ValidationError):
+        ConsumerCaseFacts(direct_loss_reference_id="short")
 
 
 def test_evidence_and_legal_authority_are_structurally_distinct() -> None:
@@ -72,6 +75,4 @@ def test_tampered_legal_summary_hash_is_rejected() -> None:
     with pytest.raises(ValidationError, match="does not match summary"):
         provision.model_copy(
             update={"summary": "Resumo adulterado"},
-        ).model_validate(
-            provision.model_copy(update={"summary": "Resumo adulterado"}).model_dump()
-        )
+        ).model_validate(provision.model_copy(update={"summary": "Resumo adulterado"}).model_dump())

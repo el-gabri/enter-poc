@@ -11,13 +11,9 @@ from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.jobs import (
-    InvalidPdfUploadError,
-    UploadTooLargeError,
-    _write_upload_in_chunks,
-)
+from app.api.jobs import UploadTooLargeError, _write_upload_in_chunks
 from app.consumer.schemas import (
     ConsumerCaseSnapshot,
     ConsumerEvidence,
@@ -30,6 +26,7 @@ from app.consumer.service import (
     ConsumerRetrievalError,
 )
 from app.consumer.store import ConsumerCaseNotFoundError
+from app.ingestion.service import DocumentTextUnavailableError
 from app.reporting.convert import render_docx, render_pdf
 from app.schemas.trace import RetrievalTrace
 
@@ -37,6 +34,20 @@ router = APIRouter(prefix="/consumer", tags=["consumer"])
 ResultT = TypeVar("ResultT")
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+EVIDENCE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+def _has_expected_signature(suffix: str, header: bytes) -> bool:
+    if suffix == ".pdf":
+        return header.startswith(b"%PDF")
+    if suffix == ".png":
+        return header.startswith(b"\x89PNG\r\n\x1a\n")
+    return suffix in {".jpg", ".jpeg"} and header.startswith(b"\xff\xd8\xff")
 
 
 class ConsumerCaseCreated(BaseModel):
@@ -57,6 +68,8 @@ class ConsumerChatTurn(BaseModel):
 
 
 class ConsumerFactsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     consumer_name: str | None = Field(default=None, max_length=200)
     bank_name: str | None = Field(default=None, max_length=200)
     issue_category: ConsumerIssueCategory | None = None
@@ -64,9 +77,9 @@ class ConsumerFactsPatch(BaseModel):
     incident_date_or_period: str | None = Field(default=None, max_length=500)
     prior_protocols: list[str] | None = None
     direct_loss_amount: Decimal | None = Field(default=None, ge=0)
+    direct_loss_reference_id: str | None = Field(default=None, min_length=16, max_length=64)
     improper_payment_amount: Decimal | None = Field(default=None, ge=0)
     article_42_double_repayment_requested: bool | None = None
-    requested_compensation_amount: Decimal | None = Field(default=None, ge=0)
     unsuccessful_scenario_cost_amount: Decimal | None = Field(default=None, ge=0)
     desired_resolution: str | None = Field(default=None, max_length=2_000)
     response_deadline_business_days: int | None = Field(default=None, ge=1, le=60)
@@ -145,9 +158,7 @@ async def update_consumer_facts(
     confirmed = values.pop("facts_confirmed", None)
     try:
         return _authorized(
-            lambda: service.update_facts(
-                case_id, token, values, facts_confirmed=confirmed
-            )
+            lambda: service.update_facts(case_id, token, values, facts_confirmed=confirmed)
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -165,30 +176,53 @@ async def add_consumer_document(
     service: ConsumerServiceDep,
     uploads_dir: UploadsDirDep,
 ) -> ConsumerDocumentAdded:
-    filename = Path(file.filename or "evidencia.pdf").name
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=422, detail="Only PDF files are accepted")
+    filename = Path(file.filename or "evidencia").name
+    suffix = Path(filename).suffix.casefold()
+    media_type = EVIDENCE_MEDIA_TYPES.get(suffix)
+    if media_type is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Formato não suportado. Envie um arquivo PDF, PNG ou JPG.",
+        )
+
     _authorized(lambda: service.get_case(case_id, token))
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = uploads_dir / f"{uuid.uuid4().hex}.pdf"
+    upload_path = uploads_dir / f"{uuid.uuid4().hex}{suffix}"
     try:
         header = await _write_upload_in_chunks(
-            file=file, path=pdf_path, max_upload_bytes=MAX_UPLOAD_BYTES
+            file=file,
+            path=upload_path,
+            max_upload_bytes=MAX_UPLOAD_BYTES,
         )
-        if not header.startswith(b"%PDF"):
-            raise InvalidPdfUploadError("File is not a valid PDF")
+        if not _has_expected_signature(suffix, header):
+            raise HTTPException(
+                status_code=422,
+                detail="O conteúdo do arquivo não corresponde ao formato informado.",
+            )
         snapshot, document = await service.add_document(
-            case_id, token, filename=filename, path=pdf_path
+            case_id,
+            token,
+            filename=filename,
+            path=upload_path,
+            media_type=media_type,
         )
     except ConsumerCaseNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Consumer case not found") from exc
     except UploadTooLargeError as exc:
-        raise HTTPException(status_code=413, detail="File exceeds 20 MB limit") from exc
-    except InvalidPdfUploadError as exc:
-        raise HTTPException(status_code=422, detail="File is not a valid PDF") from exc
+        raise HTTPException(
+            status_code=413,
+            detail="O arquivo excede o limite de 20 MB.",
+        ) from exc
+    except DocumentTextUnavailableError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=("O arquivo está corrompido, ilegível ou excede o limite de resolução aceito."),
+        ) from exc
     finally:
         await file.close()
-        await asyncio.to_thread(pdf_path.unlink, missing_ok=True)
+        await asyncio.to_thread(upload_path.unlink, missing_ok=True)
     return ConsumerDocumentAdded(case=snapshot, document=document)
 
 
@@ -221,9 +255,7 @@ async def get_consumer_notice(
         raise HTTPException(status_code=404, detail="Notice not found") from exc
 
 
-@router.get(
-    "/cases/{case_id}/notice/retrievals", response_model=list[RetrievalTrace]
-)
+@router.get("/cases/{case_id}/notice/retrievals", response_model=list[RetrievalTrace])
 async def get_consumer_notice_retrievals(
     case_id: str, token: CaseToken, service: ConsumerServiceDep
 ) -> list[RetrievalTrace]:
@@ -245,9 +277,7 @@ async def get_consumer_notice_pdf(
     return Response(
         content=render_pdf(notice.full_text),
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="notificacao_{case_id}.pdf"'
-        },
+        headers={"Content-Disposition": f'attachment; filename="notificacao_{case_id}.pdf"'},
     )
 
 
@@ -258,12 +288,8 @@ async def get_consumer_notice_docx(
     notice = await get_consumer_notice(case_id, token, service)
     return Response(
         content=render_docx(notice.full_text),
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ),
-        headers={
-            "Content-Disposition": f'attachment; filename="notificacao_{case_id}.docx"'
-        },
+        media_type=("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        headers={"Content-Disposition": f'attachment; filename="notificacao_{case_id}.docx"'},
     )
 
 

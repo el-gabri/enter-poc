@@ -22,6 +22,7 @@ from app.consumer.intake import (
     recommended_documents,
 )
 from app.consumer.legal_corpus import LegalCorpus, get_default_legal_corpus
+from app.consumer.monetary import extract_brl_mentions
 from app.consumer.schemas import (
     ConsumerCaseFacts,
     ConsumerCaseSnapshot,
@@ -31,10 +32,13 @@ from app.consumer.schemas import (
     ConsumerMessageRole,
     ConsumerNotice,
     EvidenceCitation,
+    EvidenceMonetaryReference,
     EvidenceStatus,
     LegalAuthorityCitation,
     LegalGround,
+    MonetarySourceType,
     ProvisionStatus,
+    SettlementComponentSource,
     SettlementInputs,
 )
 from app.consumer.settlement import SettlementCalculator
@@ -54,24 +58,24 @@ CONSUMER_NOTICE_WARNING = (
 )
 
 _CATEGORY_QUERY = {
-    "unauthorized_charge": "cobrança indevida pagamento repetição indébito oferta banco",
-    "fraud": "fraude bancária falha segurança serviço responsabilidade reparação consumidor",
-    "account_block": "bloqueio conta serviço bancário informação reparação consumidor",
+    "unauthorized_charge": "cobrança indevida pagamento repetição indébito oferta fornecedor",
+    "fraud": "fraude golpe falha segurança produto serviço reparação consumidor",
+    "account_block": "bloqueio conta acesso valor informação reparação consumidor",
     "negative_credit_record": "cadastro consumidor negativação cobrança informação correção",
-    "loan_or_interest": "crédito empréstimo juros informação contrato consumidor banco",
-    "service_failure": "falha prestação serviço banco responsabilidade reparação",
+    "loan_or_interest": "crédito empréstimo juros informação contrato consumidor",
+    "service_failure": "vício falha produto serviço entrega responsabilidade reparação",
     "over_indebtedness": "superendividamento crédito responsável conciliação consumidor",
-    "other": "proteção consumidor banco informação reparação boa-fé",
+    "other": "proteção consumidor fornecedor produto serviço informação reparação boa-fé",
 }
 _CATEGORY_LABEL = {
     "unauthorized_charge": "cobrança não reconhecida ou indevida",
-    "fraud": "fraude ou movimentação não reconhecida",
-    "account_block": "bloqueio de conta ou valores",
+    "fraud": "fraude, golpe ou compra não reconhecida",
+    "account_block": "bloqueio de conta, acesso ou valores",
     "negative_credit_record": "registro negativo de crédito",
     "loan_or_interest": "empréstimo, financiamento ou juros",
-    "service_failure": "falha na prestação do serviço bancário",
+    "service_failure": "problema com produto ou serviço",
     "over_indebtedness": "superendividamento",
-    "other": "controvérsia bancária de consumo",
+    "other": "controvérsia de consumo",
 }
 
 
@@ -108,9 +112,9 @@ class ConsumerCaseService:
     def create_case(self) -> tuple[ConsumerCaseSnapshot, str, str]:
         record, token = self._store.create()
         greeting = (
-            "Conte o que aconteceu com o banco, incluindo datas, valores e tentativas "
-            "anteriores de solução. Suas mensagens serão tratadas como alegações até você "
-            "confirmar os fatos e enviar documentos."
+            "Conte o que aconteceu com a empresa, fornecedor ou instituição, incluindo "
+            "datas, valores e tentativas anteriores de solução. Suas mensagens serão "
+            "tratadas como alegações até você confirmar os fatos e enviar documentos."
         )
         record.messages.append(
             ConsumerMessage(role=ConsumerMessageRole.ASSISTANT, content=greeting)
@@ -168,6 +172,20 @@ class ConsumerCaseService:
         unknown = set(updates) - allowed
         if unknown:
             raise ValueError(f"unsupported fact fields: {', '.join(sorted(unknown))}")
+        updates = dict(updates)
+        if "direct_loss_amount" in updates and "direct_loss_reference_id" not in updates:
+            updates["direct_loss_reference_id"] = None
+        reference_id = updates.get(
+            "direct_loss_reference_id", record.facts.direct_loss_reference_id
+        )
+        if reference_id is not None:
+            source = _find_monetary_reference(record, str(reference_id))
+            amount = updates.get("direct_loss_amount", record.facts.direct_loss_amount)
+            if source is None or amount is None or Decimal(str(amount)) != source[1].amount:
+                raise ValueError(
+                    "direct_loss_reference_id must identify a matching accepted evidence value"
+                )
+
         payload = record.facts.model_dump()
         payload.update(updates)
         updated = ConsumerCaseFacts.model_validate(payload)
@@ -181,21 +199,22 @@ class ConsumerCaseService:
         return self._snapshot(record)
 
     async def add_document(
-        self, case_id: str, token: str, *, filename: str, path: Path
+        self, case_id: str, token: str, *, filename: str, path: Path, media_type: str
     ) -> tuple[ConsumerCaseSnapshot, ConsumerEvidence]:
         record = self._store.get_authorized(case_id, token)
-        document = await self._ingestion.ingest(path)
-        content_sha256 = hashlib.sha256(document.full_text.encode()).hexdigest()
+        source_sha256 = _sha256_file(path)
         duplicate = next(
             (
                 item.public
                 for item in record.documents
-                if item.public.content_sha256 == content_sha256
+                if item.public.source_sha256 == source_sha256
             ),
             None,
         )
         if duplicate is not None:
             return self._snapshot(record), duplicate
+        document = await self._ingestion.ingest(path, require_text=True)
+        content_sha256 = hashlib.sha256(document.full_text.encode()).hexdigest()
         assessment, _ = await self._detector.scan(document)
         status = _evidence_status(assessment.recommended_action)
         safe = (
@@ -212,12 +231,21 @@ class ConsumerCaseService:
             warnings.append(
                 "O conteúdo não foi disponibilizado ao RAG; revise o arquivo manualmente."
             )
+        evidence_id = uuid.uuid4().hex
+        monetary_references = (
+            _extract_monetary_references(safe, source_sha256) if safe is not None else []
+        )
         public = ConsumerEvidence(
-            evidence_id=uuid.uuid4().hex,
-            filename=Path(filename).name[:255] or "evidencia.pdf",
+            evidence_id=evidence_id,
+            filename=Path(filename).name[:255] or "evidencia",
             page_count=document.page_count,
+            media_type=media_type,
+            extraction_method=document.extraction_method,
+            ocr_applied=document.ocr_applied,
             status=status,
+            source_sha256=source_sha256,
             content_sha256=content_sha256,
+            monetary_references=monetary_references,
             security_assessment=assessment,
             warnings=warnings,
         )
@@ -251,11 +279,11 @@ class ConsumerCaseService:
         category = record.facts.issue_category
         category_value = category.value if category is not None else "other"
         legal_queries = [
-            "relação de consumo serviço bancário direitos básicos reparação",
+            "relação de consumo fornecedor produto serviço direitos básicos reparação",
             _CATEGORY_QUERY[category_value],
         ]
         evidence_queries = [
-            "documento que comprova ocorrência data valor protocolo comunicação banco",
+            "documento que comprova ocorrência data valor protocolo comunicação fornecedor",
             "comprovante do prejuízo e tentativa de solução",
         ]
         try:
@@ -277,9 +305,7 @@ class ConsumerCaseService:
             ) from exc
 
         legal_grounds = self._legal_grounds(legal_results, record.facts)
-        evidence_references = self._evidence_references(
-            evidence_results, page_sources
-        )
+        evidence_references = self._evidence_references(evidence_results, page_sources)
         if not legal_grounds or not evidence_references:
             raise ConsumerRetrievalError(
                 "retrieval returned insufficient grounded support for a notice"
@@ -301,15 +327,28 @@ class ConsumerCaseService:
             {citation.chunk_id for citation in evidence_references},
         )
 
+        direct_loss_sources = _direct_loss_sources(record)
+        improper_payment_sources = (
+            direct_loss_sources
+            if (
+                record.facts.direct_loss_reference_id is not None
+                and record.facts.improper_payment_amount == record.facts.direct_loss_amount
+            )
+            else _confirmed_fact_sources(
+                "valor indevidamente pago",
+                record.facts.improper_payment_amount,
+                record.facts.complaint_summary,
+            )
+        )
+        downside_cost_sources = _confirmed_fact_sources(
+            "custo do cenário sem acordo",
+            record.facts.unsuccessful_scenario_cost_amount,
+            record.facts.complaint_summary,
+        )
         settlement = self._settlement.calculate(
             SettlementInputs(
                 direct_loss_amount=record.facts.direct_loss_amount or Decimal("0"),
-                improper_payment_amount=(
-                    record.facts.improper_payment_amount or Decimal("0")
-                ),
-                requested_compensation_amount=(
-                    record.facts.requested_compensation_amount or Decimal("0")
-                ),
+                improper_payment_amount=(record.facts.improper_payment_amount or Decimal("0")),
                 downside_cost_amount=(
                     record.facts.unsuccessful_scenario_cost_amount or Decimal("0")
                 ),
@@ -317,12 +356,11 @@ class ConsumerCaseService:
                     record.facts.article_42_double_repayment_requested
                     and (record.facts.improper_payment_amount or Decimal("0")) > 0
                 ),
-                evidence_strength=min(
-                    Decimal("0.85"),
-                    Decimal("0.45")
-                    + Decimal("0.10") * len(self._accepted_documents(record)),
-                ),
+                evidence_strength=Decimal("0.65"),
                 factual_completeness=Decimal("1"),
+                direct_loss_sources=direct_loss_sources,
+                improper_payment_sources=improper_payment_sources,
+                downside_cost_sources=downside_cost_sources,
             )
         )
         requests = _requests(record.facts)
@@ -336,7 +374,7 @@ class ConsumerCaseService:
         notice = ConsumerNotice(
             notice_id=uuid.uuid4().hex,
             case_id=record.case_id,
-            addressee=record.facts.bank_name or "[INSTITUIÇÃO FINANCEIRA]",
+            addressee=record.facts.bank_name or "[EMPRESA, FORNECEDOR OU INSTITUIÇÃO]",
             facts_summary=record.facts.complaint_summary or "",
             evidence_references=evidence_references,
             legal_grounds=legal_grounds,
@@ -425,9 +463,7 @@ class ConsumerCaseService:
                     f"CASO {record.case_id[:8]} EVIDENCIA "
                     f"{evidence.public.evidence_id[:8]} PAGINA {original.number}"
                 )
-                pages.append(
-                    DocumentPage(number=global_page, text=f"{heading}\n\n{original.text}")
-                )
+                pages.append(DocumentPage(number=global_page, text=f"{heading}\n\n{original.text}"))
                 sources[global_page] = (evidence, original.number)
         return (
             ParsedDocument(
@@ -448,9 +484,7 @@ class ConsumerCaseService:
         merged = _merge_results(result_sets)
         grounds: list[LegalGround] = []
         seen: set[str] = set()
-        issue = _CATEGORY_LABEL[
-            facts.issue_category.value if facts.issue_category else "other"
-        ]
+        issue = _CATEGORY_LABEL[facts.issue_category.value if facts.issue_category else "other"]
         for rank, result in enumerate(merged, start=1):
             for provision in self._legal_corpus.provisions_for_chunk(result):
                 if provision.status is not ProvisionStatus.ACTIVE:
@@ -499,14 +533,101 @@ class ConsumerCaseService:
                     page=original_page,
                     quote=quote,
                     chunk_id=result.chunk.chunk_id,
-                    content_sha256=hashlib.sha256(
-                        result.chunk.text.encode("utf-8")
-                    ).hexdigest(),
+                    content_sha256=hashlib.sha256(result.chunk.text.encode("utf-8")).hexdigest(),
                 )
             )
             if len(citations) >= 8:
                 break
         return citations
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _extract_monetary_references(
+    document: ParsedDocument,
+    source_sha256: str,
+) -> list[EvidenceMonetaryReference]:
+    references: list[EvidenceMonetaryReference] = []
+    for page in document.pages:
+        for mention in extract_brl_mentions(page.text):
+            material = f"{source_sha256}:{page.number}:{mention.amount}:{mention.quote_sha256}"
+            references.append(
+                EvidenceMonetaryReference(
+                    reference_id=hashlib.sha256(material.encode("utf-8")).hexdigest()[:24],
+                    amount=mention.amount,
+                    page=page.number,
+                    quote=mention.quote,
+                    quote_sha256=mention.quote_sha256,
+                )
+            )
+            if len(references) >= 50:
+                return references
+    return references
+
+
+def _find_monetary_reference(
+    record: ConsumerCaseRecord,
+    reference_id: str,
+) -> tuple[StoredEvidence, EvidenceMonetaryReference] | None:
+    for evidence in record.documents:
+        if evidence.safe_document is None:
+            continue
+        for reference in evidence.public.monetary_references:
+            if reference.reference_id == reference_id:
+                return evidence, reference
+    return None
+
+
+def _direct_loss_sources(record: ConsumerCaseRecord) -> list[SettlementComponentSource]:
+    reference_id = record.facts.direct_loss_reference_id
+    if reference_id is None:
+        return _confirmed_fact_sources(
+            "prejuízo direto",
+            record.facts.direct_loss_amount,
+            record.facts.complaint_summary,
+        )
+    found = _find_monetary_reference(record, reference_id)
+    if found is None:
+        raise ValueError("confirmed direct-loss evidence reference is no longer available")
+    evidence, reference = found
+    return [
+        SettlementComponentSource(
+            source_type=MonetarySourceType.EVIDENCE,
+            evidence_id=evidence.public.evidence_id,
+            filename=evidence.public.filename,
+            page=reference.page,
+            quote=reference.quote,
+            quote_sha256=reference.quote_sha256,
+            source_sha256=evidence.public.source_sha256,
+            content_sha256=evidence.public.content_sha256,
+            extraction_method=evidence.public.extraction_method,
+            ocr_applied=evidence.public.ocr_applied,
+        )
+    ]
+
+
+def _confirmed_fact_sources(
+    label: str,
+    amount: Decimal | None,
+    complaint_summary: str | None,
+) -> list[SettlementComponentSource]:
+    if amount is None or amount <= 0:
+        return []
+    summary = " ".join((complaint_summary or "").split())[:500]
+    source_excerpt = f"{label}: R$ {amount}; relato confirmado: {summary or 'não informado'}"
+    return [
+        SettlementComponentSource(
+            source_type=MonetarySourceType.CONSUMER_CONFIRMED,
+            quote=source_excerpt,
+            quote_sha256=hashlib.sha256(source_excerpt.encode("utf-8")).hexdigest(),
+        )
+    ]
 
 
 def _evidence_status(action: SecurityAction) -> EvidenceStatus:
@@ -534,9 +655,7 @@ def _annotate_composer_selection(
     included_chunk_ids: set[str],
 ) -> list[RetrievalTrace]:
     """Record which ranked hits became grounded composer inputs."""
-    merged_ranks = {
-        item.chunk.chunk_id: rank for rank, item in enumerate(merged, start=1)
-    }
+    merged_ranks = {item.chunk.chunk_id: rank for rank, item in enumerate(merged, start=1)}
     winners: dict[str, tuple[int, int, float]] = {}
     for trace_index, trace in enumerate(traces):
         for item in trace.results:
@@ -556,9 +675,7 @@ def _annotate_composer_selection(
                     update={
                         "selected_for_merge": selected,
                         "merged_rank": merged_ranks.get(item.chunk_id),
-                        "included_in_context": (
-                            selected and item.chunk_id in included_chunk_ids
-                        ),
+                        "included_in_context": (selected and item.chunk_id in included_chunk_ids),
                     }
                 )
             )
@@ -585,9 +702,7 @@ def _clean_chunk_quote(text: str) -> str:
 def _requests(facts: ConsumerCaseFacts) -> list[str]:
     requests = [facts.desired_resolution or "solução integral do problema relatado"]
     if facts.direct_loss_amount and facts.direct_loss_amount > 0:
-        requests.append(
-            "restituição do prejuízo direto alegado, após conferência dos comprovantes"
-        )
+        requests.append("restituição do prejuízo direto alegado, após conferência dos comprovantes")
     if facts.prior_protocols:
         requests.append("resposta escrita e fundamentada aos protocolos já registrados")
     requests.append("confirmação escrita das providências adotadas dentro do prazo indicado")
@@ -603,16 +718,14 @@ def _render_notice_markdown(
     public_proposal: Decimal | None,
 ) -> str:
     name = facts.consumer_name or "[PREENCHER NOME DO(A) CONSUMIDOR(A)]"
-    bank = facts.bank_name or "[PREENCHER INSTITUIÇÃO FINANCEIRA]"
-    subject = _CATEGORY_LABEL[
-        facts.issue_category.value if facts.issue_category else "other"
-    ]
+    supplier = facts.bank_name or "[PREENCHER EMPRESA, FORNECEDOR OU INSTITUIÇÃO]"
+    subject = _CATEGORY_LABEL[facts.issue_category.value if facts.issue_category else "other"]
     protocols = ", ".join(facts.prior_protocols) or "nenhum protocolo informado"
     lines = [
         "# NOTIFICAÇÃO EXTRAJUDICIAL COM PROPOSTA DE ACORDO",
         "",
         f"**Notificante:** {name}",
-        f"**Notificada:** {bank}",
+        f"**Notificada:** {supplier}",
         f"**Assunto:** {subject}",
         "",
         "## 1. Finalidade",
@@ -632,8 +745,7 @@ def _render_notice_markdown(
     ]
     for item in evidence:
         lines.append(
-            f"- **{item.filename}, p. {item.page}** — {item.quote} "
-            f"(chunk `{item.chunk_id}`)"
+            f"- **{item.filename}, p. {item.page}** — {item.quote} (chunk `{item.chunk_id}`)"
         )
     lines.extend(["", "## 4. Fundamentos jurídicos", ""])
     for ground in legal_grounds:

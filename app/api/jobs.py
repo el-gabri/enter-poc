@@ -28,6 +28,7 @@ from app.schemas.security import SecurityAction
 logger = get_logger(__name__)
 
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+UPLOAD_HEADER_BYTES = 16
 
 
 class UploadTooLargeError(ValueError):
@@ -36,6 +37,7 @@ class UploadTooLargeError(ValueError):
 
 class InvalidPdfUploadError(ValueError):
     """Raised when an upload does not contain a PDF header."""
+
 
 # Ordered pipeline stages and the state predicate that marks each as done.
 STAGE_PREDICATES: list[tuple[str, str]] = [
@@ -126,9 +128,7 @@ class AnalysisJobManager:
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
-    async def submit_upload(
-        self, filename: str, file: UploadFile, max_upload_bytes: int
-    ) -> Job:
+    async def submit_upload(self, filename: str, file: UploadFile, max_upload_bytes: int) -> Job:
         """Persist an upload in bounded chunks, then queue its analysis.
 
         The upload is intentionally written before a job is exposed. This
@@ -181,9 +181,7 @@ class AnalysisJobManager:
                 ):
                     job.state = JobState.BLOCKED
                 else:
-                    job.state = (
-                        JobState.PARTIAL if job.errors else JobState.SUCCEEDED
-                    )
+                    job.state = JobState.PARTIAL if job.errors else JobState.SUCCEEDED
             else:
                 job.state = JobState.FAILED
         except Exception as exc:
@@ -214,11 +212,7 @@ class AnalysisJobManager:
                 job.failed_stages.add(failed_stage)
 
     def _persist_run(self, job: Job) -> None:
-        metrics = (
-            job.result.report.metrics
-            if job.result and job.result.report
-            else RunMetrics()
-        )
+        metrics = job.result.report.metrics if job.result and job.result.report else RunMetrics()
         traces = job.result.traces if job.result else []
         doc_id = job.result.document.doc_id if job.result else ""
         try:
@@ -238,9 +232,7 @@ class AnalysisJobManager:
             logger.exception("run_persist_failed", job_id=job.job_id)
 
 
-async def _write_upload_in_chunks(
-    file: UploadFile, path: Path, max_upload_bytes: int
-) -> bytes:
+async def _write_upload_in_chunks(file: UploadFile, path: Path, max_upload_bytes: int) -> bytes:
     """Write an UploadFile without ever holding more than one chunk in memory."""
     total_bytes = 0
     header = bytearray()
@@ -248,8 +240,8 @@ async def _write_upload_in_chunks(
         total_bytes += len(chunk)
         if total_bytes > max_upload_bytes:
             raise UploadTooLargeError(f"File exceeds {max_upload_bytes} bytes")
-        if len(header) < 4:
-            header.extend(chunk[: 4 - len(header)])
+        if len(header) < UPLOAD_HEADER_BYTES:
+            header.extend(chunk[: UPLOAD_HEADER_BYTES - len(header)])
         await asyncio.to_thread(_append_bytes, path, chunk)
     return bytes(header)
 

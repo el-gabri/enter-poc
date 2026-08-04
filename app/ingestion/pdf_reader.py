@@ -1,8 +1,10 @@
-"""PDF text extraction with PyMuPDF.
+"""Document text extraction with PyMuPDF.
 
 See ADR 0005 for why PyMuPDF and how the OCR decision works.
 """
 
+import struct
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,23 +35,23 @@ class PdfExtraction:
 
 
 def extract_text(path: Path, max_pages: int | None = None) -> PdfExtraction:
-    """Extract the text layer of each page and decide whether OCR is needed.
+    """Extract each page's text layer and decide whether OCR is needed.
 
     Raises:
         FileNotFoundError: if the file does not exist.
-        ValueError: if the file is not a readable PDF.
+        ValueError: if the file is not a readable document.
     """
     if not path.exists():
         raise FileNotFoundError(path)
     try:
         doc = fitz.open(path)
     except Exception as exc:  # fitz raises generic RuntimeError subclasses
-        raise ValueError(f"Not a readable PDF: {path.name}") from exc
+        raise ValueError(f"Not a readable document: {path.name}") from exc
 
     with doc:
         if max_pages is not None and len(doc) > max_pages:
             raise ValueError(
-                f"PDF exceeds the {max_pages}-page limit: {path.name} has {len(doc)} pages"
+                f"Document exceeds the {max_pages}-page limit: {path.name} has {len(doc)} pages"
             )
         page_texts = [page.get_text("text") for page in doc]
 
@@ -62,6 +64,113 @@ def extract_text(path: Path, max_pages: int | None = None) -> PdfExtraction:
             len(page_text.strip()) < MIN_AVG_CHARS_PER_PAGE for page_text in page_texts
         ],
     )
+
+
+def image_dimensions(path: Path, *, max_pixels: int | None = None) -> tuple[int, int]:
+    """Read PNG/JPEG dimensions without decoding the image raster.
+
+    Pillow is preferred because it understands the container formats and
+    exposes its decompression-bomb guards. The small header parser is a safe
+    fallback for deployments where the optional OCR dependency is absent.
+    """
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError:
+        width, height = _image_dimensions_from_header(path)
+    else:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(path) as image:
+                    if image.format not in {"PNG", "JPEG"}:
+                        raise ValueError(f"Unsupported image container: {path.name}")
+                    width, height = image.size
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
+            limit = (
+                f"the {max_pixels}-pixel safety limit"
+                if max_pixels is not None
+                else "the image safety limit"
+            )
+            raise ValueError(f"Image exceeds {limit}: {path.name}") from exc
+        except (UnidentifiedImageError, OSError) as exc:
+            raise ValueError(f"Not a readable image: {path.name}") from exc
+
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Not a readable image: {path.name}")
+    if max_pixels is not None and width * height > max_pixels:
+        raise ValueError(f"Image exceeds the {max_pixels}-pixel safety limit: {path.name}")
+    return width, height
+
+
+def _image_dimensions_from_header(path: Path) -> tuple[int, int]:
+    """Return PNG/JPEG dimensions from bounded metadata reads only."""
+    with path.open("rb") as stream:
+        header = stream.read(32)
+        if (
+            header.startswith(b"\x89PNG\r\n\x1a\n")
+            and header[8:16] == b"\x00\x00\x00\rIHDR"
+            and len(header) >= 24
+        ):
+            return struct.unpack(">II", header[16:24])
+
+        if not header.startswith(b"\xff\xd8"):
+            raise ValueError(f"Not a readable PNG or JPEG image: {path.name}")
+
+        stream.seek(2)
+        start_of_frame_markers = {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }
+        standalone_markers = {*range(0xD0, 0xD8), 0xD8, 0xD9, 0x01}
+
+        for _ in range(512):
+            prefix = stream.read(1)
+            if prefix != b"\xff":
+                raise ValueError(f"Not a readable JPEG image: {path.name}")
+
+            marker = stream.read(1)
+            while marker == b"\xff":
+                marker = stream.read(1)
+            if not marker:
+                break
+            marker_code = marker[0]
+            if marker_code in standalone_markers:
+                continue
+            if marker_code == 0xDA:  # Start of scan: dimensions must precede it.
+                break
+
+            length_bytes = stream.read(2)
+            if len(length_bytes) != 2:
+                break
+            segment_length = int.from_bytes(length_bytes, "big")
+            if segment_length < 2:
+                break
+
+            if marker_code in start_of_frame_markers:
+                frame_header = stream.read(5)
+                if len(frame_header) != 5 or segment_length < 7:
+                    break
+                height = int.from_bytes(frame_header[1:3], "big")
+                width = int.from_bytes(frame_header[3:5], "big")
+                return width, height
+
+            stream.seek(segment_length - 2, 1)
+
+    raise ValueError(f"Not a readable JPEG image: {path.name}")
 
 
 def render_page_images(
