@@ -8,11 +8,18 @@ Run:
 """
 
 import os
+import sys
+from pathlib import Path
 
 import requests
 import streamlit as st
 
-from frontend.consumer_view import render_consumer_app
+# The Streamlit launcher does not guarantee that the repository root is importable.
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from frontend.consumer_view import render_consumer_app  # noqa: E402
 
 API_URL = os.getenv("LITIGATION_API_URL", "http://localhost:8000")
 POLL_SECONDS = 1.0
