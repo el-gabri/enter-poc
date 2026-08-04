@@ -76,7 +76,7 @@ Browser -> Streamlit -> FastAPI (202 + async job)
     -> RAG: Business dense retrieval | Consumer legal BM25+dense/RRF -> optional reranker
        -> isolated, versioned ChromaDB collections (corpus hash + embedding revision)
        -> retrieval audit: query -> top-k ranks/scores -> prompt inclusion
-    -> LLM port: OpenAI adapter | Mock adapter (offline mode)
+    -> LLM port: OpenAI | Anthropic Claude | Google Gemini | Mock (offline demo)
     -> Deterministic report composer -> MD / PDF / DOCX / JSON
 ```
 
@@ -217,7 +217,8 @@ from Planalto.
 ### Docker (recommended)
 
 ```bash
-copy .env.example .env      # fill LITIGATION_OPENAI_API_KEY (or use mock)
+# Optional: copy .env.example .env to configure a real provider.
+# With no .env, the backend starts in the keyless offline demo.
 docker compose up --build
 # UI:  http://localhost:8501
 # API: http://localhost:8000/docs
@@ -234,11 +235,82 @@ pytest                                            # fully offline
 uvicorn app.api.main:app --reload                 # terminal 1
 streamlit run frontend/streamlit_app.py           # terminal 2
 ```
+
 Local OCR for images and scanned PDFs also requires the Tesseract system binary
 and Portuguese language data. The API Docker image already installs both.
 
-No API key? Set `LITIGATION_LLM_PROVIDER=mock` - the entire product runs
-offline with deterministic outputs (also how CI works).
+### Choose an AI provider
+
+Edit `.env` using one of the configurations below. `LITIGATION_LLM_MODEL` is
+optional: when absent, the app selects a valid default for that provider.
+Selecting a real provider without its matching key fails immediately with an
+actionable error; the app never silently substitutes mock output.
+
+#### No API key: offline demo
+
+This is already the default in `.env.example` and when no `.env` exists:
+
+```dotenv
+LITIGATION_LLM_PROVIDER=mock
+LITIGATION_EMBEDDING_PROVIDER=auto
+```
+
+The full UI, ingestion, security, RAG and export pipeline runs without network
+calls. Generated model fields are deterministic placeholders and **must not be
+treated as a real legal analysis or notice**. Tests and CI use this mode.
+
+#### OpenAI
+
+```dotenv
+LITIGATION_LLM_PROVIDER=openai
+LITIGATION_OPENAI_API_KEY=sk-...
+LITIGATION_EMBEDDING_PROVIDER=auto
+# Optional: LITIGATION_LLM_MODEL=gpt-4o-mini
+# Optional: LITIGATION_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+`auto` reuses the OpenAI key for embeddings.
+
+#### Anthropic Claude
+
+Anthropic does not provide an embeddings API. With Claude, `auto` therefore
+uses local multilingual `BAAI/bge-m3` embeddings and needs the optional local
+dependency:
+
+```bash
+pip install -e ".[dev,frontend,ocr,local-embeddings]"
+```
+
+```dotenv
+LITIGATION_LLM_PROVIDER=anthropic
+LITIGATION_ANTHROPIC_API_KEY=sk-ant-...
+LITIGATION_EMBEDDING_PROVIDER=auto
+# Optional: LITIGATION_LLM_MODEL=claude-sonnet-5
+# Optional: LITIGATION_EMBEDDING_MODEL=BAAI/bge-m3
+```
+
+For Docker, also set `LITIGATION_API_EXTRAS=ocr,local-embeddings` in `.env`
+before `docker compose up --build`. The embedding model is downloaded on first
+use, so allow enough disk and memory. Alternatively, explicitly configure
+OpenAI or Gemini embeddings and provide that provider's key.
+
+#### Google Gemini
+
+```dotenv
+LITIGATION_LLM_PROVIDER=gemini
+LITIGATION_GEMINI_API_KEY=...
+LITIGATION_EMBEDDING_PROVIDER=auto
+# Optional: LITIGATION_LLM_MODEL=gemini-3.6-flash
+# Optional: LITIGATION_EMBEDDING_MODEL=gemini-embedding-2
+LITIGATION_GEMINI_EMBEDDING_DIMENSIONS=768
+```
+
+`auto` reuses the Gemini key for purpose-aware Gemini Embedding 2 retrieval.
+Changing provider, embedding model or dimensions creates a different Chroma
+collection; existing documents must be reindexed. Model defaults follow the
+current official [Claude model list](https://platform.claude.com/docs/en/about-claude/models/overview),
+[Gemini model list](https://ai.google.dev/gemini-api/docs/models) and
+[Gemini embeddings guide](https://ai.google.dev/gemini-api/docs/embeddings).
 
 ### Document handling
 
@@ -260,7 +332,7 @@ policy before real case data is used.
 app/
 ├── core/           config (pydantic-settings), structured logging
 ├── consumer/       guided intake · legal corpus · evidence · notice composer
-├── llm/            LLMClient port · OpenAI + Mock adapters · pricing
+├── llm/            LLMClient port · OpenAI/Claude/Gemini/Mock adapters · pricing
 ├── schemas/        typed contracts for every layer (the domain model)
 ├── ingestion/      PDF/image -> text, OCR fallback, language detection
 ├── security/       prompt-injection scanning, policy and safe context masking
@@ -289,7 +361,6 @@ tests/              offline unit, integration and security tests
 
 - Add brazilian jurisprudence
 - Redis-backed job queue + horizontal workers (ADR 0009 documents the path)
-- Anthropic/Gemini adapters for the LLM port
 - Pinecone adapter for multi-tenant scale
 - Case-law retrieval (jurisprudence RAG) as a second corpus
 - Human feedback loop: lawyer corrections feeding the golden dataset

@@ -3,7 +3,11 @@ services:
     build:
       context: .
       target: api
-    env_file: .env
+      args:
+        API_EXTRAS: ${LITIGATION_API_EXTRAS:-ocr}
+    env_file:
+      - path: .env
+        required: false
     environment:
       LITIGATION_DATA_DIR: /app/data
     ports:

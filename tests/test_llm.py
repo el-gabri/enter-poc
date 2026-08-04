@@ -6,8 +6,10 @@ import pytest
 from pydantic import BaseModel
 
 from app.core.config import LLMProvider, Settings
+from app.llm.anthropic_client import AnthropicClient
 from app.llm.base import LLMClient, TokenUsage
 from app.llm.factory import create_llm_client
+from app.llm.gemini_client import GeminiClient
 from app.llm.mock_client import MockLLMClient, synthesize_instance
 from app.llm.pricing import estimate_cost_usd
 
@@ -67,15 +69,72 @@ def test_factory_returns_mock_client() -> None:
     assert isinstance(client, LLMClient)  # protocol conformance
 
 
+def test_fresh_settings_run_offline_without_an_api_key() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_provider is LLMProvider.MOCK
+    assert isinstance(create_llm_client(settings), MockLLMClient)
+
+
 def test_factory_rejects_openai_without_key() -> None:
-    settings = Settings(
-        llm_provider=LLMProvider.OPENAI, openai_api_key=None, _env_file=None
-    )
+    settings = Settings(llm_provider=LLMProvider.OPENAI, openai_api_key=None, _env_file=None)
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         create_llm_client(settings)
+
+
+@pytest.mark.parametrize(
+    ("provider", "error"),
+    [
+        (LLMProvider.ANTHROPIC, "ANTHROPIC_API_KEY"),
+        (LLMProvider.GEMINI, "GEMINI_API_KEY"),
+    ],
+)
+def test_factory_rejects_new_provider_without_its_key(provider: LLMProvider, error: str) -> None:
+    settings = Settings(llm_provider=provider, _env_file=None)
+
+    with pytest.raises(ValueError, match=error):
+        create_llm_client(settings)
+
+
+def test_factory_uses_provider_specific_default_models() -> None:
+    anthropic = create_llm_client(
+        Settings(
+            llm_provider=LLMProvider.ANTHROPIC,
+            anthropic_api_key="anthropic-test",
+            _env_file=None,
+        )
+    )
+    gemini = create_llm_client(
+        Settings(
+            llm_provider=LLMProvider.GEMINI,
+            gemini_api_key="gemini-test",
+            _env_file=None,
+        )
+    )
+
+    assert isinstance(anthropic, AnthropicClient)
+    assert anthropic._model == "claude-sonnet-5"
+    assert isinstance(gemini, GeminiClient)
+    assert gemini._model == "gemini-3.6-flash"
+
+
+def test_factory_honours_model_override_for_new_providers() -> None:
+    client = create_llm_client(
+        Settings(
+            llm_provider=LLMProvider.ANTHROPIC,
+            anthropic_api_key="anthropic-test",
+            llm_model="claude-haiku-4-5",
+            _env_file=None,
+        )
+    )
+
+    assert isinstance(client, AnthropicClient)
+    assert client._model == "claude-haiku-4-5"
 
 
 def test_pricing_known_and_unknown_models() -> None:
     usage = TokenUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000)
     assert estimate_cost_usd("gpt-4o-mini", usage) == pytest.approx(0.75)
+    assert estimate_cost_usd("claude-sonnet-5", usage) == pytest.approx(18.0)
+    assert estimate_cost_usd("gemini-3.6-flash", usage) == pytest.approx(9.0)
     assert estimate_cost_usd("some-future-model", usage) is None

@@ -10,9 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Gabriel", email = "gabrielbhl@gmail.com" }]
 dependencies = [
-    "pydantic>=2.7",
+    "pydantic>=2.12.5",
     "pydantic-settings>=2.3",
     "openai>=1.40",
+    "anthropic>=0.120,<1",
+    "google-genai>=2.16,<3",
     "structlog>=24.1",
     "pymupdf>=1.24",
     "langdetect>=1.0.9",
@@ -21,7 +23,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "python-multipart>=0.0.9",
-    "httpx>=0.27",
+    "httpx>=0.28.1",
     "python-docx>=1.1",
     "reportlab>=4.0",
 ]
@@ -44,7 +46,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
-    "httpx>=0.27",
+    "httpx>=0.28.1",
 ]
 
 [tool.setuptools.packages.find]

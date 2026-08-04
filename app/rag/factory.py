@@ -12,6 +12,7 @@ from app.core.config import (
 from app.rag.chunking import SectionAwareChunker
 from app.rag.embeddings import (
     EmbeddingBackend,
+    GeminiEmbeddingClient,
     MockEmbeddingClient,
     OpenAIEmbeddingClient,
     SentenceTransformerEmbeddingClient,
@@ -27,33 +28,45 @@ from app.rag.vector_store import (
 
 _CONFIGURED_RERANKER = object()
 
+_DEFAULT_EMBEDDING_MODELS: dict[EmbeddingProvider, str] = {
+    EmbeddingProvider.OPENAI: "text-embedding-3-small",
+    EmbeddingProvider.GEMINI: "gemini-embedding-2",
+    EmbeddingProvider.SENTENCE_TRANSFORMERS: "BAAI/bge-m3",
+    EmbeddingProvider.MOCK: "mock-hashed-bow-v1",
+}
+
 
 def create_embedding_client(settings: Settings) -> EmbeddingBackend:
-    provider = settings.embedding_provider
-    if provider is EmbeddingProvider.AUTO:
-        provider = (
-            EmbeddingProvider.MOCK
-            if settings.llm_provider is LLMProvider.MOCK
-            else EmbeddingProvider.OPENAI
-        )
+    provider = _embedding_provider_for(settings)
+    model = _embedding_model_for(settings, provider)
     if provider is EmbeddingProvider.MOCK:
         return MockEmbeddingClient(query_instruction=settings.embedding_query_instruction)
     if provider is EmbeddingProvider.SENTENCE_TRANSFORMERS:
         return SentenceTransformerEmbeddingClient(
-            model=settings.embedding_model,
+            model=model,
             query_instruction=settings.embedding_query_instruction,
             device=settings.embedding_device,
             batch_size=settings.embedding_batch_size,
             model_revision=settings.embedding_model_revision,
         )
-    if not settings.openai_api_key:
-        raise ValueError("LITIGATION_OPENAI_API_KEY required for OpenAI embeddings")
-    return OpenAIEmbeddingClient(
-        api_key=settings.openai_api_key,
-        model=settings.embedding_model,
-        query_instruction=settings.embedding_query_instruction,
-        model_revision=settings.embedding_model_revision,
-    )
+    if provider is EmbeddingProvider.GEMINI:
+        api_key = _embedding_api_key(settings.gemini_api_key, provider="Gemini")
+        return GeminiEmbeddingClient(
+            api_key=api_key,
+            model=model,
+            dimensions=settings.gemini_embedding_dimensions,
+            batch_size=settings.embedding_batch_size,
+            query_instruction=settings.embedding_query_instruction,
+        )
+    if provider is EmbeddingProvider.OPENAI:
+        api_key = _embedding_api_key(settings.openai_api_key, provider="OpenAI")
+        return OpenAIEmbeddingClient(
+            api_key=api_key,
+            model=model,
+            query_instruction=settings.embedding_query_instruction,
+            model_revision=settings.embedding_model_revision,
+        )
+    raise ValueError(f"Unsupported embedding provider: {provider}")
 
 
 def create_vector_store(
@@ -64,7 +77,7 @@ def create_vector_store(
 ) -> VectorStore:
     collection_name = versioned_collection_name(
         corpus_version or settings.rag_corpus_version,
-        embedding_model or settings.embedding_model,
+        embedding_model or _embedding_model_for(settings, _embedding_provider_for(settings)),
         prefix="give-exit",
     )
     if settings.vector_store is VectorStoreBackend.MEMORY:
@@ -98,7 +111,8 @@ def create_rag_pipeline(
         else cast(Reranker | None, reranker)
     )
     effective_corpus_version = corpus_version or settings.rag_corpus_version
-    embedding_model = str(getattr(effective_embedder, "model_name", settings.embedding_model))
+    fallback_model = _embedding_model_for(settings, _embedding_provider_for(settings))
+    embedding_model = str(getattr(effective_embedder, "model_name", fallback_model))
     embedding_revision = getattr(effective_embedder, "_model_revision", None)
     embedding_identity = (
         f"{embedding_model}@{embedding_revision}" if embedding_revision else embedding_model
@@ -124,3 +138,35 @@ def create_rag_pipeline(
         reranker=effective_reranker,
         corpus_version=effective_corpus_version,
     )
+
+
+def _embedding_provider_for(settings: Settings) -> EmbeddingProvider:
+    provider = settings.embedding_provider
+    if provider is not EmbeddingProvider.AUTO:
+        return provider
+    return {
+        LLMProvider.MOCK: EmbeddingProvider.MOCK,
+        LLMProvider.OPENAI: EmbeddingProvider.OPENAI,
+        LLMProvider.GEMINI: EmbeddingProvider.GEMINI,
+        # Anthropic has no embeddings API. The local default lets a Claude-only
+        # installation work without requiring a second vendor key.
+        LLMProvider.ANTHROPIC: EmbeddingProvider.SENTENCE_TRANSFORMERS,
+    }[settings.llm_provider]
+
+
+def _embedding_model_for(settings: Settings, provider: EmbeddingProvider) -> str:
+    override = (settings.embedding_model or "").strip()
+    if override:
+        return override
+    try:
+        return _DEFAULT_EMBEDDING_MODELS[provider]
+    except KeyError as exc:  # pragma: no cover - AUTO is resolved above
+        raise ValueError(f"No default model for embedding provider: {provider}") from exc
+
+
+def _embedding_api_key(value: str | None, *, provider: str) -> str:
+    key = (value or "").strip()
+    if not key:
+        variable = provider.upper()
+        raise ValueError(f"LITIGATION_{variable}_API_KEY is required for {provider} embeddings")
+    return key

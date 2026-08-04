@@ -26,8 +26,9 @@ flowchart TD
     subgraph LLM Layer
         LC[LLMClient Protocol]
         LC --> OAI[OpenAI]
+        LC --> ANT[Anthropic Claude]
+        LC --> GEM[Google Gemini]
         LC --> MOCK[Mock]
-        LC -.-> ANT[Anthropic - future]
     end
     PI -.->|balanced: suspicious excerpts only| LC
     C & E & L & R & S --> LC
@@ -64,9 +65,10 @@ flowchart TD
    response - cost/latency/token tracking cannot be forgotten.
 4. **Explainability**: every conclusion carries a confidence score, the
    reasoning behind it, and citations to source chunks.
-5. **Swappable infrastructure**: LLM provider, vector store and (future)
-   queue are behind ports; adapters are chosen in factories at composition
-   roots.
+5. **Swappable infrastructure**: OpenAI, Claude, Gemini and Mock share the
+   typed LLM port; embedding and vector-store adapters are selected separately
+   at composition roots. Claude uses a local embedding model in `auto` mode
+   because Anthropic does not expose an embeddings API.
 6. **Untrusted document boundary**: every page passes through
    `security_scan` before indexing. Deterministic Portuguese/English rules
    always run; `balanced` mode uses the LLM only to review suspicious

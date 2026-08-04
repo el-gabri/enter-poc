@@ -2,8 +2,9 @@
 
 ## Setup (before the interview)
 
-1. `.env` with a real OpenAI key; `docker compose up --build` (or the two
-   local processes).
+1. `.env` with a real OpenAI, Anthropic or Gemini key; `docker compose up
+   --build` (or the two local processes). Claude also needs the local-embedding
+   extra described in the README.
 2. Have a real-ish lawsuit PDF ready (or print one of the `eval_data`
    cases to PDF).
 3. Open three tabs: Streamlit (8501), Swagger (8000/docs), the repo.
@@ -33,8 +34,8 @@ Show the Explicabilidade tab: per-agent latency, tokens, prompt versions.
 - `app/security/` - deterministic checks on every page, with an optional
   semantic review only for suspicious excerpts ("documents are untrusted
   input, never instructions");
-- `app/llm/base.py` - the 2-method LLM port ("Anthropic support is one new
-  file; observability is enforced by the return type");
+- `app/llm/base.py` - the 2-method LLM port ("OpenAI, Claude and Gemini share
+  one typed contract; observability is enforced by the return type");
 - `app/services/composer.py` - deterministic last mile ("the report cannot
   hallucinate at assembly");
 - `tests/` + CI - offline tests via the mock provider ("CI costs zero

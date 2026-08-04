@@ -5,9 +5,17 @@ else depends on the ``LLMClient`` protocol.
 """
 
 from app.core.config import LLMProvider, Settings
+from app.llm.anthropic_client import AnthropicClient
 from app.llm.base import LLMClient
+from app.llm.gemini_client import GeminiClient
 from app.llm.mock_client import MockLLMClient
 from app.llm.openai_client import OpenAIClient
+
+_DEFAULT_MODELS: dict[LLMProvider, str] = {
+    LLMProvider.OPENAI: "gpt-4o-mini",
+    LLMProvider.ANTHROPIC: "claude-sonnet-5",
+    LLMProvider.GEMINI: "gemini-3.6-flash",
+}
 
 
 def create_llm_client(settings: Settings) -> LLMClient:
@@ -19,13 +27,48 @@ def create_llm_client(settings: Settings) -> LLMClient:
     if settings.llm_provider is LLMProvider.MOCK:
         return MockLLMClient()
 
+    model = _model_for(settings)
     if settings.llm_provider is LLMProvider.OPENAI:
-        if not settings.openai_api_key:
-            raise ValueError(
-                "LITIGATION_OPENAI_API_KEY is required when "
-                "LITIGATION_LLM_PROVIDER=openai. Set it in .env or switch "
-                "the provider to 'mock'."
-            )
-        return OpenAIClient(api_key=settings.openai_api_key, model=settings.llm_model)
+        api_key = _required_key(settings.openai_api_key, provider="openai", variable="OPENAI")
+        return OpenAIClient(api_key=api_key, model=model)
+
+    if settings.llm_provider is LLMProvider.ANTHROPIC:
+        api_key = _required_key(
+            settings.anthropic_api_key, provider="anthropic", variable="ANTHROPIC"
+        )
+        return AnthropicClient(
+            api_key=api_key,
+            model=model,
+            max_output_tokens=settings.llm_max_output_tokens,
+        )
+
+    if settings.llm_provider is LLMProvider.GEMINI:
+        api_key = _required_key(settings.gemini_api_key, provider="gemini", variable="GEMINI")
+        return GeminiClient(
+            api_key=api_key,
+            model=model,
+            max_output_tokens=settings.llm_max_output_tokens,
+        )
 
     raise ValueError(f"Unsupported LLM provider: {settings.llm_provider}")
+
+
+def _model_for(settings: Settings) -> str:
+    override = (settings.llm_model or "").strip()
+    if override:
+        return override
+    try:
+        return _DEFAULT_MODELS[settings.llm_provider]
+    except KeyError as exc:  # pragma: no cover - guarded by the factory branches
+        raise ValueError(f"No default model for LLM provider: {settings.llm_provider}") from exc
+
+
+def _required_key(value: str | None, *, provider: str, variable: str) -> str:
+    key = (value or "").strip()
+    if not key:
+        raise ValueError(
+            f"LITIGATION_{variable}_API_KEY is required when "
+            f"LITIGATION_LLM_PROVIDER={provider}. Set it in .env or explicitly "
+            "use LITIGATION_LLM_PROVIDER=mock for the offline demo."
+        )
+    return key

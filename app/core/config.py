@@ -18,6 +18,8 @@ class LLMProvider(str, Enum):
     """Supported LLM backends. Adding a provider = new enum value + new client."""
 
     OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
     MOCK = "mock"
 
 
@@ -33,6 +35,7 @@ class EmbeddingProvider(str, Enum):
 
     AUTO = "auto"
     OPENAI = "openai"
+    GEMINI = "gemini"
     SENTENCE_TRANSFORMERS = "sentence_transformers"
     MOCK = "mock"
 
@@ -70,15 +73,25 @@ class Settings(BaseSettings):
     )
 
     # --- LLM ---
-    llm_provider: LLMProvider = LLMProvider.OPENAI
+    # A fresh clone starts in an explicitly offline demonstration mode. Real
+    # providers never fall back to mock when their configured key is missing.
+    llm_provider: LLMProvider = LLMProvider.MOCK
     openai_api_key: str | None = Field(default=None, repr=False)
-    llm_model: str = "gpt-4o-mini"
+    anthropic_api_key: str | None = Field(default=None, repr=False)
+    gemini_api_key: str | None = Field(default=None, repr=False)
+    # Optional provider-independent override. When omitted, the factory picks
+    # a valid default for OpenAI, Anthropic or Gemini.
+    llm_model: str | None = None
+    llm_max_output_tokens: int = Field(default=8192, ge=1)
     embedding_provider: EmbeddingProvider = EmbeddingProvider.AUTO
-    embedding_model: str = "text-embedding-3-small"
+    # Optional override. AUTO resolves a provider-specific default instead of
+    # accidentally sending another vendor's model name.
+    embedding_model: str | None = None
     embedding_model_revision: str | None = None
     embedding_query_instruction: str | None = None
     embedding_device: str | None = None
     embedding_batch_size: int = Field(default=8, ge=1)
+    gemini_embedding_dimensions: int = Field(default=768, ge=128, le=3072)
 
     # --- Storage ---
     data_dir: Path = Path("./data")

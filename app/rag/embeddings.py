@@ -12,6 +12,8 @@ import math
 import time
 from typing import Any, Protocol, runtime_checkable
 
+from google import genai
+from google.genai import types
 from openai import AsyncOpenAI
 
 from app.core.logging import get_logger
@@ -120,6 +122,112 @@ class OpenAIEmbeddingClient:
                 cost_usd=estimate_cost_usd(self._model, usage),
             )
             vectors.extend(item.embedding for item in response.data)
+        return vectors
+
+
+class GeminiEmbeddingClient:
+    """Purpose-aware embeddings through the native Google GenAI SDK.
+
+    Gemini Embedding 2 aggregates a plain list of strings into one vector.
+    Each input is therefore wrapped in its own ``Content`` object so the
+    output cardinality always matches the number of chunks or queries.
+    """
+
+    FRAME_VERSION = "retrieval-prefix-v1"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-embedding-2",
+        *,
+        dimensions: int = 768,
+        batch_size: int = 8,
+        query_instruction: str | None = None,
+        client: Any | None = None,
+    ) -> None:
+        self._client = client or genai.Client(api_key=api_key)
+        self._model = model
+        self._dimensions = dimensions
+        self._batch_size = batch_size
+        self._query_instruction = query_instruction
+        self._is_embedding_2 = model.removeprefix("models/") == "gemini-embedding-2"
+        self._model_revision = f"dimensions={dimensions};frame={self.FRAME_VERSION}"
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Compatibility alias: unqualified text is treated as a document."""
+        return await self.embed_documents(texts)
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        prepared = [self._prepare_document(text) for text in texts]
+        return await self._embed_batches(prepared, purpose="document")
+
+    async def embed_query(self, text: str) -> list[float]:
+        return (await self.embed_queries([text]))[0]
+
+    async def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        prepared = [self._prepare_query(text) for text in texts]
+        return await self._embed_batches(prepared, purpose="query")
+
+    def _prepare_document(self, text: str) -> str:
+        if self._is_embedding_2:
+            return f"title: none | text: {text}"
+        return text
+
+    def _prepare_query(self, text: str) -> str:
+        instructed = _with_instruction(text, self._query_instruction)
+        if self._is_embedding_2:
+            return f"task: search result | query: {instructed}"
+        return instructed
+
+    async def _embed_batches(self, texts: list[str], *, purpose: str) -> list[list[float]]:
+        if not texts:
+            return []
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self._batch_size):
+            batch = texts[start : start + self._batch_size]
+            # The SDK accepts this documented list-of-Content shape, but its
+            # generated union annotation is not covariant under strict MyPy.
+            contents: Any = [
+                types.Content(parts=[types.Part.from_text(text=text)]) for text in batch
+            ]
+            config = types.EmbedContentConfig(output_dimensionality=self._dimensions)
+            if not self._is_embedding_2:
+                config.task_type = (
+                    "RETRIEVAL_DOCUMENT" if purpose == "document" else "RETRIEVAL_QUERY"
+                )
+
+            t0 = time.perf_counter()
+            response = await self._client.aio.models.embed_content(
+                model=self._model,
+                contents=contents,
+                config=config,
+            )
+            embeddings = list(getattr(response, "embeddings", None) or [])
+            if len(embeddings) != len(batch):
+                raise ValueError(
+                    "Gemini embedding response cardinality mismatch: "
+                    f"expected {len(batch)}, received {len(embeddings)}"
+                )
+            for embedding in embeddings:
+                values = getattr(embedding, "values", None)
+                if not values:
+                    raise ValueError("Gemini returned an embedding without values")
+                vector = [float(value) for value in values]
+                norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+                vectors.append([value / norm for value in vector])
+            logger.info(
+                "embeddings_created",
+                provider="gemini",
+                model=self._model,
+                dimensions=self._dimensions,
+                purpose=purpose,
+                texts=len(batch),
+                latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+            )
         return vectors
 
 
