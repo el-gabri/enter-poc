@@ -1,5 +1,7 @@
 """Language detection for ingested documents."""
 
+from typing import cast
+
 from langdetect import DetectorFactory, LangDetectException, detect
 
 # langdetect is probabilistic; a fixed seed makes results deterministic,
@@ -20,6 +22,6 @@ def detect_language(text: str) -> str:
     if len(sample) < MIN_TEXT_LENGTH:
         return FALLBACK_LANGUAGE
     try:
-        return detect(sample[:5000])  # first pages are enough; keep it fast
+        return cast(str, detect(sample[:5000]))  # first pages are enough; keep it fast
     except LangDetectException:
         return FALLBACK_LANGUAGE

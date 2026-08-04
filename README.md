@@ -42,11 +42,13 @@ and accepts supporting PDF, PNG and JPEG evidence.
 Every upload passes through the prompt-injection security gate. Images and
 scanned PDFs are accepted only when OCR produces reviewable text; unreadable
 files are rejected instead of being treated as supporting evidence.
-The assistant then retrieves relevant, versioned summaries of provisions from
-the [Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicao.htm)
-and the [Consumer Defense Code (CDC)](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm),
-keeps legal-source citations separate from evidence citations, and prepares an
-auditable draft for export.
+The assistant retrieves from a versioned offline snapshot of the complete,
+compiled [Consumer Defense Code (CDC)](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm)
+and a separately identified set of relevant provisions from the
+[Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicaocompilado.htm).
+Official statutory text is parsed at legal boundaries and kept distinct from
+editorial metadata. Legal-source citations remain separate from evidence
+citations in the auditable draft.
 
 The generated artifact is a **notificação extrajudicial com proposta de
 acordo** (extrajudicial notice with a settlement proposal), not a lawsuit or a
@@ -71,7 +73,8 @@ Browser -> Streamlit -> FastAPI (202 + async job)
                        |                                  |              +--> strategy --+--> compose
                        |                                  +--> DataJud enrichment -------+
                        +--> halt for human review / block -------------------------------+
-    -> RAG: section-aware chunking -> embeddings -> ChromaDB (per-doc isolation)
+    -> RAG: Business dense retrieval | Consumer legal BM25+dense/RRF -> optional reranker
+       -> isolated, versioned ChromaDB collections (corpus hash + embedding revision)
        -> retrieval audit: query -> top-k ranks/scores -> prompt inclusion
     -> LLM port: OpenAI adapter | Mock adapter (offline mode)
     -> Deterministic report composer -> MD / PDF / DOCX / JSON
@@ -95,6 +98,7 @@ Full diagram and layer map: [docs/architecture.md](docs/architecture.md).
 | [0010](docs/adr/0010-prompt-injection-security-gate.md) | Scan untrusted document content before indexing or LLM analysis |
 | [0011](docs/adr/0011-retrieval-traceability-and-evaluation.md) | Persist query-to-context provenance and evaluate retrieval rankings |
 | [0012](docs/adr/0012-bounded-consumer-extrajudicial-notice.md) | Bound the consumer workflow to auditable, human-reviewed extrajudicial notice drafts |
+| [0013](docs/adr/0013-versioned-consumer-law-retrieval.md) | Use versioned official statutes, legal-boundary chunks and evaluated hybrid retrieval |
 
 ### Explainability model
 
@@ -121,10 +125,11 @@ Per-run aggregates persist to a JSONL run store surfaced in the API
 (`/runs`, `/runs/totals`) and the UI's cost panel.
 
 Retrieval traces are nested under each agent trace and persist the raw top-k
-rankings without storing full chunk text: query/hash, requested `k`, rank,
-similarity score, chunk/document IDs, section, page span, indexed-text hash,
-latency, embedding/index versions, and whether the chunk survived deduplication
-and context truncation. Failed embedding/search attempts retain one event per
+rankings without storing full chunk text: query/hash, retrieval mode,
+requested/candidate `k`, RRF settings, embedding/query-instruction/model
+revisions, reranker, legal source/release/unit hashes, rank, score,
+chunk/document IDs, section, page span, latency, and whether the chunk survived
+deduplication and context truncation. Failed embedding/search attempts retain one event per
 query, successful sibling lookups, and the consuming agent's status, error, and
 prompt version. Text previews are disabled by default; enable
 `LITIGATION_RETRIEVAL_TRACE_INCLUDE_PREVIEWS=true` only under an explicit data
@@ -166,6 +171,46 @@ only). Retrieval labels use relevant page ranges and passage anchors so they
 remain valid when chunk sizes change. Overlapping chunks that satisfy the same
 passage label count as one relevance unit, and unresolved labels fail loudly.
 Runs offline in CI with the mock provider as a pipeline health check.
+
+Consumer legal retrieval has a separate seed dataset. It is intentionally
+marked `requires_legal_review`: the cases are useful for engineering bake-offs,
+but they are not yet a production legal benchmark. The file pins the exact
+corpus release and SHA-256; stale labels fail before retrieval starts.
+
+```bash
+# Complete CDC, mock embeddings + BM25/RRF; no API key or model download.
+python -m app.evaluation.consumer_runner
+
+# Explicit configured-provider bake-off (may call an API or load a local model).
+python -m app.evaluation.consumer_runner \
+  --retriever app.evaluation.consumer_retrievers:configured_hybrid_retriever
+```
+
+The Consumer suite reports subdivision and article Recall@5/10, MRR, graded
+NDCG, article/subdivision precision, hard-negative and inactive-authority rates,
+retrieval failure rate, and abstention on complaints outside consumer law.
+Its JSON retains the two production-equivalent queries, ranked hits, dataset/
+corpus/configuration manifest, and aggregates by category and slice. Configure
+`LITIGATION_EMBEDDING_PROVIDER=sentence_transformers` with
+`LITIGATION_EMBEDDING_MODEL=ufca-llms/jua-4B-mixed` or `BAAI/bge-m3` after
+installing `.[local-embeddings]`. Pin the Hugging Face model revision and keep
+the local batch size small for JUÁ 4B. Changing the embedding revision or
+corpus hash uses a new Chroma collection and requires reindexing. The built-in
+mock+BM25 run is a deterministic health baseline, not evidence that its ranking
+is production-ready.
+
+The pinned CDC source is refreshed only by an explicit maintainer operation:
+
+```bash
+python -m app.consumer.update_cdc_snapshot --retrieved-on YYYY-MM-DD
+pytest tests/test_consumer_legal_corpus.py tests/test_consumer_evaluation.py
+```
+
+Review the statutory diff, manifest hash and golden labels before accepting a
+new corpus release. The refresh command writes `review_status=pending_review`;
+promotion requires an explicit manifest review/status change, combined corpus
+release update, and golden-label review. Runtime requests never download law
+from Planalto.
 
 ## Quickstart
 
@@ -219,7 +264,7 @@ app/
 ├── schemas/        typed contracts for every layer (the domain model)
 ├── ingestion/      PDF/image -> text, OCR fallback, language detection
 ├── security/       prompt-injection scanning, policy and safe context masking
-├── rag/            section-aware chunker · embeddings port · vector store port
+├── rag/            document/legal chunking · embeddings · hybrid retrieval · reranking
 ├── agents/         classifier · extraction · legal analysis · risk · strategy
 ├── prompts/        versioned PT-BR prompt templates
 ├── orchestration/  LangGraph state machine
@@ -231,7 +276,7 @@ app/
 └── api/            FastAPI app · async job manager · routes
 frontend/           Streamlit UI (pure API client)
 eval_data/          golden dataset
-docs/               architecture + 12 ADRs + demo script
+docs/               architecture + 13 ADRs + demo script
 tests/              offline unit, integration and security tests
 ```
 

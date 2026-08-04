@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.consumer_routes import router as consumer_router
 from app.api.jobs import AnalysisJobManager
 from app.api.routes import router
+from app.consumer.legal_corpus import get_default_legal_corpus
 from app.consumer.service import ConsumerCaseService
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
@@ -25,7 +26,7 @@ from app.ingestion.service import DocumentIngestionService
 from app.llm.factory import create_llm_client
 from app.observability.store import RunStore
 from app.orchestration.graph import build_analysis_graph
-from app.rag.factory import create_rag_pipeline
+from app.rag.factory import create_embedding_client, create_rag_pipeline, create_reranker
 from app.security import PromptInjectionDetector
 from app.services.analysis import create_datajud_client
 
@@ -37,7 +38,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings.log_level)
         llm = create_llm_client(settings)
-        rag = create_rag_pipeline(settings)
+        # Business and Consumer use isolated indexes.  The legal collection is
+        # tied to the exact corpus digest, so a snapshot/parser change cannot
+        # silently reuse stale vectors or change the established Business rank.
+        embedder = create_embedding_client(settings)
+        reranker = create_reranker(settings)
+        rag = create_rag_pipeline(settings, embedder=embedder, reranker=reranker)
+        legal_corpus = get_default_legal_corpus()
+        consumer_rag = create_rag_pipeline(
+            settings,
+            corpus_version=(f"{legal_corpus.release_id}-{legal_corpus.corpus_sha256[:12]}"),
+            embedder=embedder,
+            reranker=reranker,
+        )
         ingestion = DocumentIngestionService(
             ocr_engine=create_default_ocr_engine(), max_pages=settings.max_document_pages
         )
@@ -64,7 +77,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.consumer_service = ConsumerCaseService(
             ingestion=ingestion,
             detector=prompt_injection_detector,
-            rag=rag,
+            rag=consumer_rag,
+            legal_corpus=legal_corpus,
         )
         app.state.consumer_uploads_dir = settings.uploads_dir / "consumer"
         yield

@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+MetadataValue = str | int | float | bool | None
+
 
 class Chunk(BaseModel):
     """A retrievable slice of a document, with provenance."""
@@ -14,6 +16,13 @@ class Chunk(BaseModel):
     )
     page_start: int = Field(ge=1)
     page_end: int = Field(ge=1)
+    metadata: dict[str, MetadataValue] = Field(
+        default_factory=dict,
+        description=(
+            "Structured source provenance such as law/article, corpus release, "
+            "official URL and content hash"
+        ),
+    )
 
 
 class RetrievedChunk(BaseModel):

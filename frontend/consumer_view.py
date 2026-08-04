@@ -34,6 +34,10 @@ FACT_LABELS = {
     "direct_loss_amount": "Prejuízo material",
     "unsuccessful_scenario_cost_amount": "Custo estimado se não houver acordo",
     "desired_resolution": "Solução pretendida",
+    "consumer_relationship": (
+        "relação de consumo não identificada; este fluxo não cobre questões "
+        "trabalhistas ou entre particulares"
+    ),
 }
 
 BLOCKED_DOCUMENT_STATUSES = {

@@ -23,6 +23,11 @@ from app.consumer.intake import (
 )
 from app.consumer.legal_corpus import LegalCorpus, get_default_legal_corpus
 from app.consumer.monetary import extract_brl_mentions
+from app.consumer.retrieval import (
+    build_evidence_queries,
+    build_legal_queries,
+    is_consumer_scope,
+)
 from app.consumer.schemas import (
     ConsumerCaseFacts,
     ConsumerCaseSnapshot,
@@ -34,7 +39,6 @@ from app.consumer.schemas import (
     EvidenceCitation,
     EvidenceMonetaryReference,
     EvidenceStatus,
-    LegalAuthorityCitation,
     LegalGround,
     MonetarySourceType,
     ProvisionStatus,
@@ -57,16 +61,6 @@ CONSUMER_NOTICE_WARNING = (
     "orientação jurídica individualizada. Confira fatos, documentos, destinatário e prazos."
 )
 
-_CATEGORY_QUERY = {
-    "unauthorized_charge": "cobrança indevida pagamento repetição indébito oferta fornecedor",
-    "fraud": "fraude golpe falha segurança produto serviço reparação consumidor",
-    "account_block": "bloqueio conta acesso valor informação reparação consumidor",
-    "negative_credit_record": "cadastro consumidor negativação cobrança informação correção",
-    "loan_or_interest": "crédito empréstimo juros informação contrato consumidor",
-    "service_failure": "vício falha produto serviço entrega responsabilidade reparação",
-    "over_indebtedness": "superendividamento crédito responsável conciliação consumidor",
-    "other": "proteção consumidor fornecedor produto serviço informação reparação boa-fé",
-}
 _CATEGORY_LABEL = {
     "unauthorized_charge": "cobrança não reconhecida ou indevida",
     "fraud": "fraude, golpe ou compra não reconhecida",
@@ -276,22 +270,15 @@ class ConsumerCaseService:
             raise ConsumerRetrievalError("accepted evidence produced no retrievable text")
         record.indexed_document_ids.add(evidence_document.doc_id)
 
-        category = record.facts.issue_category
-        category_value = category.value if category is not None else "other"
-        legal_queries = [
-            "relação de consumo fornecedor produto serviço direitos básicos reparação",
-            _CATEGORY_QUERY[category_value],
-        ]
-        evidence_queries = [
-            "documento que comprova ocorrência data valor protocolo comunicação fornecedor",
-            "comprovante do prejuízo e tentativa de solução",
-        ]
+        legal_queries = build_legal_queries(record.facts)
+        evidence_queries = build_evidence_queries(record.facts)
         try:
             legal_results, legal_traces = await self._rag.retrieve_many_with_traces(
                 legal_queries,
                 doc_id=self._legal_corpus.as_parsed_document().doc_id,
                 agent="consumer_legal_authorities",
                 k=8,
+                mode="hybrid",
             )
             evidence_results, evidence_traces = await self._rag.retrieve_many_with_traces(
                 evidence_queries,
@@ -383,6 +370,7 @@ class ConsumerCaseService:
             settlement=settlement,
             full_text=full_text,
             corpus_release_id=self._legal_corpus.release_id,
+            corpus_sha256=self._legal_corpus.corpus_sha256,
             retrievals=[*legal_traces, *evidence_traces],
             warnings=[CONSUMER_NOTICE_WARNING],
         )
@@ -406,12 +394,15 @@ class ConsumerCaseService:
             return
         async with self._legal_index_lock:
             if not self._legal_indexed:
-                await self._rag.index_document(self._legal_corpus.as_parsed_document())
+                await self._rag.index_chunks(self._legal_corpus.as_chunks())
                 self._legal_indexed = True
 
     def _snapshot(self, record: ConsumerCaseRecord) -> ConsumerCaseSnapshot:
         missing = record.facts.missing_fields()
-        ready = not self._readiness_missing(record)
+        readiness_missing = self._readiness_missing(record)
+        ready = not readiness_missing
+        if "consumer_relationship" in readiness_missing:
+            missing.append("consumer_relationship")
         if record.notice is not None:
             status = ConsumerCaseStatus.NOTICE_GENERATED
         elif ready:
@@ -437,6 +428,16 @@ class ConsumerCaseService:
 
     def _readiness_missing(self, record: ConsumerCaseRecord) -> list[str]:
         missing = list(record.facts.missing_fields())
+        category = (
+            record.facts.issue_category.value
+            if record.facts.issue_category is not None
+            else "other"
+        )
+        if not is_consumer_scope(
+            category=category,
+            complaint=record.facts.complaint_summary or "",
+        ):
+            missing.append("consumer_relationship")
         if not self._has_accepted_evidence(record):
             missing.append("accepted_evidence")
         if not record.facts_confirmed:
@@ -481,6 +482,12 @@ class ConsumerCaseService:
         result_sets: list[list[RetrievedChunk]],
         facts: ConsumerCaseFacts,
     ) -> list[LegalGround]:
+        category = facts.issue_category.value if facts.issue_category else "other"
+        if not is_consumer_scope(
+            category=category,
+            complaint=facts.complaint_summary or "",
+        ):
+            return []
         merged = _merge_results(result_sets)
         grounds: list[LegalGround] = []
         seen: set[str] = set()
@@ -489,20 +496,21 @@ class ConsumerCaseService:
             for provision in self._legal_corpus.provisions_for_chunk(result):
                 if provision.status is not ProvisionStatus.ACTIVE:
                     continue
+                unit = self._legal_corpus.unit_for_chunk(result)
+                if unit is not None and unit.status is not ProvisionStatus.ACTIVE:
+                    continue
                 if provision.provision_id in seen:
                     continue
                 seen.add(provision.provision_id)
-                authority = LegalAuthorityCitation.from_provision(
-                    provision,
-                    chunk_id=result.chunk.chunk_id,
+                authority = self._legal_corpus.authority_for_chunk(
+                    result,
                     retrieval_rank=rank,
-                    retrieval_score=result.score,
                 )
                 grounds.append(
                     LegalGround(
                         authority=authority,
                         application_to_facts=(
-                            f"A regra resumida em {provision.citation_label} é pertinente "
+                            f"O texto oficial em {provision.citation_label} é pertinente "
                             f"à alegação de {issue} "
                             "e deve ser confrontada com os documentos citados."
                         ),
@@ -750,10 +758,20 @@ def _render_notice_markdown(
     lines.extend(["", "## 4. Fundamentos jurídicos", ""])
     for ground in legal_grounds:
         authority = ground.authority
+        official_excerpt = _bounded_legal_excerpt(
+            authority.official_excerpt or authority.official_text
+        )
+        unit_suffix = f", {authority.unit_label}" if authority.unit_label else ""
+        source_hash = (
+            authority.official_excerpt_sha256
+            or authority.official_text_sha256
+            or authority.content_sha256
+        )
         lines.append(
-            f"- **[{authority.citation_label}]({authority.official_url})** — "
-            f"{authority.summary} Aplicação: {ground.application_to_facts} "
-            f"(corpus `{authority.corpus_release_id}`, SHA-256 `{authority.content_sha256}`)"
+            f"- **[{authority.citation_label}{unit_suffix}]({authority.official_url})** — "
+            f"{official_excerpt or authority.summary} Aplicação: "
+            f"{ground.application_to_facts} "
+            f"(corpus `{authority.corpus_release_id}`, SHA-256 `{source_hash}`)"
         )
     lines.extend(["", "## 5. Providências solicitadas", ""])
     lines.extend(f"- {request}" for request in requests)
@@ -792,3 +810,10 @@ def _render_notice_markdown(
 def _brl(value: Decimal) -> str:
     rendered = f"{value:,.2f}"
     return rendered.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _bounded_legal_excerpt(text: str | None, limit: int = 600) -> str:
+    normalized = " ".join((text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rsplit(" ", 1)[0] + "…"

@@ -26,15 +26,15 @@ scope of this demonstration.
    lawsuit, initial petition or court filing. The application only creates an
    exportable draft; it does not send, file or represent the consumer. A human
    reviewer remains responsible for every use of the artifact.
-3. Retrieve legal grounds from a reviewed, versioned summary corpus based on
-   the official current texts of the
-   [Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicao.htm)
-   and the
-   [Consumer Defense Code](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm).
-   Each entry has a stable provision ID, source, article reference, official
-   URL, corpus release, verification date and content hash. Summaries are
-   navigation aids, not substitutes for the official text, and a corpus release
-   must not mix legal versions.
+3. Retrieve legal grounds from versioned sources: an integrity-checked snapshot
+   of the complete compiled
+   [Consumer Defense Code](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm)
+   and an explicitly identified set of relevant editorial summaries from the
+   [Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicao.htm).
+   Each entry has a stable provision/subdivision ID, source, article reference,
+   official URL, corpus release, verification date and content hashes. The CDC
+   official text is the primary authority; summaries remain navigation aids.
+   ADR 0013 defines the statutory ingestion and retrieval details.
 4. Keep distinct provenance chains. Evidence references identify the original
    file hash, extracted-text hash, page and retrieved chunk supporting a factual
    assertion. Financial components point either to a consumer-confirmed fact or

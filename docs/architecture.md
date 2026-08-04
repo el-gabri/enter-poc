@@ -44,7 +44,9 @@ flowchart TD
 | Schemas | `app/schemas` | Pydantic domain models - the contract between all agents. |
 | Ingestion | `app/ingestion` | PDF -> text, OCR fallback, language detection. |
 | Security | `app/security` | Bilingual prompt-injection detection, routing policy and context masking. |
-| RAG | `app/rag` | Chunking, embeddings, vector store port + ChromaDB adapter. |
+| Consumer | `app/consumer` | Guided intake, versioned CDC corpus, evidence and notice composition. |
+| RAG | `app/rag` | Document/legal chunking, embeddings, BM25+RRF, reranking and vector stores. |
+| Evaluation | `app/evaluation` | Business golden plus Consumer statutory-retrieval bake-offs. |
 | Agents | `app/agents` | Specialized agents; each = role + prompt + input/output schema. |
 | Orchestration | `app/orchestration` | LangGraph graph wiring agents into a pipeline. |
 | Services | `app/services` | Use cases (analyze lawsuit, export report). |
@@ -75,12 +77,21 @@ flowchart TD
    reached the prompt. Full chunk text and vectors are excluded from run JSONL;
    SHA-256 hashes support integrity checks, and bounded previews are explicit
    opt-in because run history outlives the uploaded PDF by default.
+8. **Statutes as versioned primary sources**: the Consumer path indexes an
+   integrity-checked offline snapshot of the compiled CDC. Chunks follow legal
+   subdivisions, never cross articles, retain source/status/hierarchy hashes,
+   and exclude inactive units from generated authorities. Selected
+   constitutional provisions are transcribed from the official compiled text.
+   Business and Consumer use separate indexes; the Consumer namespace includes
+   the canonical corpus hash while the Business default remains dense retrieval.
 
 ## Retrieval audit and evaluation
 
-The runtime trace records agent, query and query hash, effective `k`, embedding
-and index versions, query/search latency, raw rank and score, document/chunk ID,
-section, page span, indexed-text hash, and prompt inclusion. The trace remains
+The runtime trace records agent, query and query hash, retrieval mode,
+requested/candidate `k`, chunking policy, embedding/query instruction/model
+revision, index, RRF weights, reranker, score type, latency, raw rank and score,
+document/chunk ID, section, page span, indexed-text/source hashes, structured
+legal-source metadata, and prompt inclusion. The trace remains
 nested under the agent so parallel LangGraph branches cannot lose attribution.
 Embedding and vector-search failures retain attempted queries, successful
 sibling lookups, and the consuming agent's status/error instead of disappearing
@@ -89,6 +100,9 @@ from the audit trail.
 Production runs expose descriptive telemetry and citation-to-context coverage.
 Relevance metrics require labels, so Precision@K, Recall@K, HitRate@K, MRR@K,
 and NDCG@K run offline against golden page-range and passage judgments.
+The separate Consumer seed pins the exact corpus hash and adds graded statutory
+labels, article/subdivision metrics, hard negatives, inactive-authority checks,
+no-ground abstention, retrieval failure coverage, and category/slice summaries.
 
 ## Prompt-injection routing
 
@@ -113,3 +127,4 @@ Recorded as ADRs in [`docs/adr/`](adr/). Highlights:
 - [0004](adr/0004-async-first.md) - Async-first from day one
 - [0010](adr/0010-prompt-injection-security-gate.md) - Pre-index prompt-injection security gate
 - [0011](adr/0011-retrieval-traceability-and-evaluation.md) - Retrieval audit and ranking metrics
+- [0013](adr/0013-versioned-consumer-law-retrieval.md) - Versioned statutes and hybrid legal retrieval

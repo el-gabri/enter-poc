@@ -5,7 +5,7 @@ warning on the document) when Tesseract is not installed. Install with:
 ``pip install -e ".[ocr]"`` plus the Tesseract binary + 'por' language pack.
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from app.core.logging import get_logger
 
@@ -32,7 +32,7 @@ class TesseractOcr:
         from PIL import Image
 
         image = Image.open(io.BytesIO(image_png))
-        return pytesseract.image_to_string(image, lang=self._language)
+        return cast(str, pytesseract.image_to_string(image, lang=self._language))
 
 
 def create_default_ocr_engine(language: str = "por") -> OcrEngine | None:

@@ -155,11 +155,27 @@ async def test_full_consumer_notice_lifecycle(
     assert notice["title"].startswith("Notificação extrajudicial")
     assert notice["evidence_references"][0]["filename"] == "extrato.pdf"
     assert notice["legal_grounds"]
+    assert len(notice["corpus_sha256"]) == 64
     assert all(
         ground["authority"]["official_url"].startswith("https://www.planalto.gov.br/")
         for ground in notice["legal_grounds"]
     )
     assert all(ground["authority"]["status"] == "active" for ground in notice["legal_grounds"])
+    assert all(
+        ground["authority"]["official_excerpt"]
+        and len(ground["authority"]["official_excerpt_sha256"]) == 64
+        for ground in notice["legal_grounds"]
+        if ground["authority"]["law_id"] == "br-cdc"
+    )
+    legal_traces = [
+        trace for trace in notice["retrievals"] if trace["agent"] == "consumer_legal_authorities"
+    ]
+    assert all(trace["score_type"] == "rrf_score" for trace in legal_traces)
+    assert any(
+        result["source_metadata"].get("provision_id")
+        for trace in legal_traces
+        for result in trace["results"]
+    )
     assert {trace["agent"] for trace in notice["retrievals"]} == {
         "consumer_legal_authorities",
         "consumer_case_evidence",
@@ -213,6 +229,50 @@ async def test_legacy_requested_compensation_is_rejected(
 
     assert response.status_code == 422
     assert "extra_forbidden" in response.text
+
+
+async def test_clear_non_consumer_dispute_cannot_generate_cdc_notice(
+    consumer_client: httpx.AsyncClient,
+) -> None:
+    case_id, token = await _new_case(consumer_client)
+    headers = _headers(token)
+    facts = {
+        "consumer_name": "Pessoa Trabalhadora",
+        "bank_name": "Empresa Empregadora",
+        "issue_category": "other",
+        "complaint_summary": (
+            "Meu empregador não pagou meu salário nem o vale-transporte deste mês."
+        ),
+        "incident_date_or_period": "julho de 2026",
+        "desired_resolution": "receber salário e benefício trabalhista atrasados",
+    }
+    assert (
+        await consumer_client.patch(f"/consumer/cases/{case_id}/facts", headers=headers, json=facts)
+    ).status_code == 200
+    upload = await consumer_client.post(
+        f"/consumer/cases/{case_id}/documents",
+        headers=headers,
+        files={
+            "file": (
+                "holerite.pdf",
+                _pdf_bytes("HOLERITE. Salário de julho não pago pelo empregador."),
+                "application/pdf",
+            )
+        },
+    )
+    assert upload.status_code == 201
+    confirmed = await consumer_client.patch(
+        f"/consumer/cases/{case_id}/facts",
+        headers=headers,
+        json={"facts_confirmed": True},
+    )
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["ready_for_notice"] is False
+    assert "consumer_relationship" in confirmed.json()["missing_fields"]
+    generated = await consumer_client.post(f"/consumer/cases/{case_id}/notice", headers=headers)
+    assert generated.status_code == 409
+    assert "consumer_relationship" in generated.json()["detail"]["missing"]
 
 
 async def test_documented_value_requires_confirmation_and_keeps_financial_provenance(

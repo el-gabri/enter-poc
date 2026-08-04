@@ -7,6 +7,7 @@ production (log aggregators like Datadog/CloudWatch parse it natively).
 
 import logging
 import sys
+from typing import cast
 
 import structlog
 
@@ -20,9 +21,7 @@ def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
     ]
 
     renderer: structlog.typing.Processor = (
-        structlog.processors.JSONRenderer()
-        if json_output
-        else structlog.dev.ConsoleRenderer()
+        structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer()
     )
 
     structlog.configure(
@@ -38,4 +37,4 @@ def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a named structured logger."""
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))

@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "litigation-copilot"
+name = "give-exit"
 version = "0.1.0"
-description = "AI Litigation Copilot - multi-agent lawsuit analysis with RAG, structured outputs and full observability"
+description = "Dual-sided Brazilian litigation analysis and consumer notices with auditable RAG"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Gabriel", email = "gabrielbhl@gmail.com" }]
@@ -31,6 +35,10 @@ ocr = [
     "pytesseract>=0.3.10",
     "Pillow>=10.0",
 ]
+local-embeddings = [
+    "sentence-transformers>=3.0",
+    "transformers>=4.51.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -42,6 +50,9 @@ dev = [
 [tool.setuptools.packages.find]
 # frontend/ and eval_data/ are not installable packages - only app/ is.
 include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.consumer" = ["data/cdc/*.html", "data/cdc/*.json"]
 
 [tool.ruff]
 line-length = 100

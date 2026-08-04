@@ -28,6 +28,29 @@ class VectorStoreBackend(str, Enum):
     MEMORY = "memory"
 
 
+class EmbeddingProvider(str, Enum):
+    """Embedding backends independent from the conversational LLM provider."""
+
+    AUTO = "auto"
+    OPENAI = "openai"
+    SENTENCE_TRANSFORMERS = "sentence_transformers"
+    MOCK = "mock"
+
+
+class RetrievalMode(str, Enum):
+    """Candidate-generation strategies supported by the RAG pipeline."""
+
+    DENSE = "dense"
+    HYBRID = "hybrid"
+
+
+class RerankerProvider(str, Enum):
+    """Optional second-stage retrieval rankers."""
+
+    NONE = "none"
+    SENTENCE_TRANSFORMERS = "sentence_transformers"
+
+
 class PromptInjectionScanMode(str, Enum):
     """How the pre-analysis document security gate reviews suspicious text."""
 
@@ -50,7 +73,12 @@ class Settings(BaseSettings):
     llm_provider: LLMProvider = LLMProvider.OPENAI
     openai_api_key: str | None = Field(default=None, repr=False)
     llm_model: str = "gpt-4o-mini"
+    embedding_provider: EmbeddingProvider = EmbeddingProvider.AUTO
     embedding_model: str = "text-embedding-3-small"
+    embedding_model_revision: str | None = None
+    embedding_query_instruction: str | None = None
+    embedding_device: str | None = None
+    embedding_batch_size: int = Field(default=8, ge=1)
 
     # --- Storage ---
     data_dir: Path = Path("./data")
@@ -63,13 +91,24 @@ class Settings(BaseSettings):
     chunk_overlap_chars: int = 150
     retrieval_k: int = Field(default=6, ge=1)
     retrieval_trace_include_previews: bool = False
+    # Preserve the established Business ranking. Consumer retrieval opts into
+    # hybrid explicitly at its call site.
+    retrieval_mode: RetrievalMode = RetrievalMode.DENSE
+    retrieval_candidate_multiplier: int = Field(default=4, ge=1)
+    retrieval_rrf_constant: int = Field(default=60, ge=1)
+    retrieval_dense_weight: float = Field(default=1.0, gt=0)
+    retrieval_lexical_weight: float = Field(default=1.0, gt=0)
+    rag_corpus_version: str = Field(default="documents-v1", min_length=1)
+    reranker_provider: RerankerProvider = RerankerProvider.NONE
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_model_revision: str | None = None
+    reranker_device: str | None = None
+    reranker_batch_size: int = Field(default=8, ge=1)
 
     # --- Document security ---
     # Every mode applies deterministic bilingual rules to every page. Balanced
     # reviews suspicious candidates; strict semantically reviews all page text.
-    prompt_injection_scan_mode: PromptInjectionScanMode = (
-        PromptInjectionScanMode.BALANCED
-    )
+    prompt_injection_scan_mode: PromptInjectionScanMode = PromptInjectionScanMode.BALANCED
     prompt_injection_strict_max_chars: int = Field(default=500_000, ge=1)
     prompt_injection_strict_max_batches: int = Field(default=64, ge=1)
 

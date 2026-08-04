@@ -7,6 +7,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from app.llm.base import LLMCallMetadata
+from app.schemas.rag import MetadataValue
 
 
 class AgentStatus(str, Enum):
@@ -25,9 +26,18 @@ class RetrievedItemTrace(BaseModel):
     page_end: int = Field(ge=1)
     score: float
     content_sha256: str
+    source_metadata: dict[str, MetadataValue] = Field(
+        default_factory=dict,
+        description="Structured chunk provenance, excluding the full source text",
+    )
+    source_url: str | None = None
+    source_release_id: str | None = None
+    source_snapshot_sha256: str | None = None
+    source_content_sha256: str | None = None
+    source_provision_id: str | None = None
+    source_unit_id: str | None = None
     text_preview: str | None = Field(
-        default=None,
-        description="Bounded, whitespace-normalized preview of the indexed chunk"
+        default=None, description="Bounded, whitespace-normalized preview of the indexed chunk"
     )
     selected_for_merge: bool = Field(
         default=False,
@@ -57,11 +67,27 @@ class RetrievalTrace(BaseModel):
     query: str
     query_sha256: str
     requested_k: int = Field(ge=1)
+    candidate_k: int | None = Field(
+        default=None,
+        ge=1,
+        description="Candidates fetched before fusion/reranking",
+    )
+    candidate_multiplier: int | None = Field(default=None, ge=1)
     returned_count: int = Field(ge=0)
+    retrieval_mode: str = "dense"
     embedding_model: str
+    embedding_model_revision: str | None = None
+    embedding_query_instruction: str | None = None
+    embedding_query_instruction_sha256: str | None = None
     vector_store: str
     index_version: str
+    chunking_version: str = "unknown"
     score_type: str = "cosine_similarity"
+    rrf_constant: int | None = Field(default=None, ge=1)
+    dense_weight: float | None = Field(default=None, gt=0)
+    lexical_weight: float | None = Field(default=None, gt=0)
+    reranker_model: str | None = None
+    reranker_model_revision: str | None = None
     embedding_duration_ms: float = Field(default=0.0, ge=0)
     search_duration_ms: float = Field(default=0.0, ge=0)
     total_duration_ms: float = Field(default=0.0, ge=0)
