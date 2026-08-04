@@ -1,0 +1,1205 @@
+"""Consumer-facing Streamlit journey for extrajudicial notices."""
+
+from __future__ import annotations
+
+import html
+import re
+from collections.abc import Iterable
+from typing import Any
+from urllib.parse import urlparse
+from uuid import uuid4
+
+import streamlit as st
+
+from frontend.api_client import ConsumerApiClient, ConsumerApiError
+
+ISSUE_LABELS = {
+    "unauthorized_charge": "Cobrança não reconhecida ou indevida",
+    "fraud": "Fraude ou movimentação não reconhecida",
+    "account_block": "Conta ou valor bloqueado",
+    "negative_credit_record": "Negativação indevida",
+    "loan_or_interest": "Empréstimo, financiamento ou juros",
+    "service_failure": "Falha na prestação do serviço",
+    "over_indebtedness": "Superendividamento",
+    "other": "Outro problema bancário",
+}
+
+FACT_LABELS = {
+    "consumer_name": "Nome do consumidor",
+    "bank_name": "Banco ou instituição",
+    "issue_category": "Tipo de problema",
+    "complaint_summary": "Relato do ocorrido",
+    "incident_date_or_period": "Data ou período",
+    "prior_protocols": "Protocolos anteriores",
+    "direct_loss_amount": "Prejuízo material",
+    "requested_compensation_amount": "Compensação adicional pretendida",
+    "unsuccessful_scenario_cost_amount": "Custo estimado se não houver acordo",
+    "desired_resolution": "Solução pretendida",
+}
+
+BLOCKED_DOCUMENT_STATUSES = {
+    "blocked",
+    "rejected",
+    "review_required",
+    "human_review",
+    "failed",
+}
+OFFICIAL_LEGAL_HOSTS = {
+    "planalto.gov.br",
+    "www.planalto.gov.br",
+    "camara.leg.br",
+    "www.camara.leg.br",
+    "www2.camara.leg.br",
+}
+
+CONSUMER_STATE_KEYS = (
+    "consumer_case_id",
+    "consumer_case_token",
+    "consumer_case",
+    "consumer_notice",
+    "consumer_facts_synced_at",
+    "consumer_flash",
+    "consumer_upload_generation",
+)
+
+
+def render_consumer_app(api_url: str) -> None:
+    """Render the complete consumer journey without exposing business history."""
+    _initialize_state()
+    client = ConsumerApiClient(api_url)
+    connected = _render_sidebar(client, api_url)
+
+    st.title("Assistente para reclamações bancárias")
+    st.caption(
+        "Organize os fatos e as provas para gerar uma notificação extrajudicial "
+        "com proposta de acordo — não uma ação judicial."
+    )
+    st.info(
+        "A ferramenta prepara um rascunho com referências à Constituição e ao "
+        "Código de Defesa do Consumidor. Revise o documento com um advogado antes "
+        "de enviá-lo, sobretudo quando houver prazo, dano urgente ou valor relevante.",
+        icon=":material/info:",
+    )
+    _render_flash()
+
+    if not connected:
+        st.error(
+            "O atendimento ao consumidor está temporariamente indisponível porque "
+            "a API não respondeu. Nenhum dado foi enviado."
+        )
+        return
+
+    if not _has_case_credentials():
+        _render_onboarding(client)
+        return
+
+    case = st.session_state.get("consumer_case")
+    if not isinstance(case, dict):
+        try:
+            case = client.get_case(
+                st.session_state.consumer_case_id,
+                st.session_state.consumer_case_token,
+            )
+            _store_case(case)
+        except ConsumerApiError as exc:
+            st.error(str(exc))
+            if st.button("Iniciar novo atendimento", icon=":material/restart_alt:"):
+                _reset_case_state()
+                st.rerun()
+            return
+
+    _render_case(client, case)
+
+
+def _initialize_state() -> None:
+    st.session_state.setdefault("consumer_case_id", None)
+    st.session_state.setdefault("consumer_case_token", None)
+    st.session_state.setdefault("consumer_case", None)
+    st.session_state.setdefault("consumer_notice", None)
+    st.session_state.setdefault("consumer_facts_synced_at", None)
+    st.session_state.setdefault("consumer_flash", None)
+    st.session_state.setdefault("consumer_upload_generation", 0)
+
+
+def _has_case_credentials() -> bool:
+    return bool(
+        st.session_state.get("consumer_case_id") and st.session_state.get("consumer_case_token")
+    )
+
+
+def _render_sidebar(client: ConsumerApiClient, api_url: str) -> bool:
+    with st.sidebar:
+        st.title("Litigation Copilot")
+        st.caption("Área do consumidor")
+        try:
+            client.health()
+            st.success("API conectada", icon=":material/check_circle:")
+            connected = True
+        except ConsumerApiError:
+            st.error("API indisponível", icon=":material/error:")
+            st.caption(f"Endereço configurado: `{api_url}`")
+            connected = False
+
+        if _has_case_credentials():
+            st.divider()
+            case_id = st.session_state.consumer_case_id
+            st.caption(f"Atendimento `{case_id[:8]}` nesta sessão")
+            with st.container(horizontal=True):
+                if st.button(
+                    "Atualizar",
+                    icon=":material/refresh:",
+                    disabled=not connected,
+                    key="consumer_refresh_case",
+                ):
+                    try:
+                        _store_case(
+                            client.get_case(
+                                case_id,
+                                st.session_state.consumer_case_token,
+                            )
+                        )
+                        _set_flash("success", "Atendimento atualizado.")
+                        st.rerun()
+                    except ConsumerApiError as exc:
+                        st.error(str(exc))
+                if st.button(
+                    "Apagar",
+                    icon=":material/delete:",
+                    disabled=not connected,
+                    key="consumer_delete_case",
+                ):
+                    _confirm_delete_case(client)
+
+        st.divider()
+        st.caption(
+            "O acesso ao rascunho fica restrito a esta sessão por um token. "
+            "Este MVP não substitui autenticação, política de retenção e controles "
+            "de privacidade para uso em produção."
+        )
+        st.caption(
+            "Conteúdo gerado por IA para apoio informativo. Não substitui "
+            "orientação jurídica profissional."
+        )
+    return connected
+
+
+@st.dialog("Apagar atendimento")
+def _confirm_delete_case(client: ConsumerApiClient) -> None:
+    st.write(
+        "Isso remove o atendimento e os documentos indexados pela API. "
+        "Baixe o rascunho antes de continuar, se quiser guardá-lo."
+    )
+    confirm = st.checkbox(
+        "Confirmo que quero apagar este atendimento",
+        key="consumer_delete_confirm",
+    )
+    if st.button(
+        "Apagar definitivamente",
+        type="primary",
+        icon=":material/delete_forever:",
+        disabled=not confirm,
+        width="stretch",
+    ):
+        try:
+            client.delete_case(
+                st.session_state.consumer_case_id,
+                st.session_state.consumer_case_token,
+            )
+        except ConsumerApiError as exc:
+            st.error(str(exc))
+            return
+        _reset_case_state()
+        _set_flash("success", "Atendimento apagado.")
+        st.rerun()
+
+
+def _render_onboarding(client: ConsumerApiClient) -> None:
+    with st.container(border=True):
+        st.subheader("Como funciona")
+        st.markdown(
+            "1. Conte o problema em suas palavras.\n"
+            "2. Confirme os fatos organizados pelo assistente.\n"
+            "3. Envie PDFs que sustentem o relato.\n"
+            "4. Revise e baixe a notificação e a memória de cálculo."
+        )
+        st.caption(
+            "Evite enviar senhas, códigos de autenticação ou dados que não sejam "
+            "necessários para a reclamação."
+        )
+
+    understood = st.checkbox(
+        "Entendo que este é um rascunho informativo e que documentos podem conter dados pessoais",
+        key="consumer_onboarding_ack",
+    )
+    if st.button(
+        "Iniciar atendimento",
+        type="primary",
+        icon=":material/chat:",
+        disabled=not understood,
+        width="stretch",
+    ):
+        try:
+            with st.status("Abrindo atendimento…", expanded=True) as status:
+                payload = client.create_case()
+                case = _case_from_payload(payload)
+                case_id = payload.get("case_id") or case.get("case_id")
+                token = payload.get("case_token")
+                if not case_id or not token:
+                    raise ConsumerApiError("A API não retornou as credenciais do atendimento.")
+                st.session_state.consumer_case_id = str(case_id)
+                st.session_state.consumer_case_token = str(token)
+                _store_case(case)
+                _merge_assistant_message(case, payload.get("assistant_message"))
+                status.update(
+                    label="Atendimento iniciado",
+                    state="complete",
+                    expanded=False,
+                )
+            st.rerun()
+        except ConsumerApiError as exc:
+            st.error(str(exc))
+
+
+def _render_case(client: ConsumerApiClient, case: dict[str, Any]) -> None:
+    case_id = st.session_state.consumer_case_id
+    token = st.session_state.consumer_case_token
+
+    st.caption(
+        f"Atendimento `{case_id[:8]}` · acesso mantido nesta sessão do navegador; "
+        "caso armazenado temporariamente pela API"
+    )
+    _render_conversation_and_summary(case)
+
+    st.divider()
+    _render_facts_form(client, case_id, token, case)
+
+    st.divider()
+    _render_evidence_section(client, case_id, token, case)
+
+    st.divider()
+    _render_generation_section(client, case_id, token, case)
+
+    notice = st.session_state.get("consumer_notice")
+    if not isinstance(notice, dict) and case.get("notice_available"):
+        try:
+            notice = client.get_notice(case_id, token)
+            st.session_state.consumer_notice = _notice_from_payload(notice)
+        except ConsumerApiError as exc:
+            st.warning(f"Não foi possível recuperar o rascunho já gerado: {exc}")
+            notice = None
+    if isinstance(notice, dict):
+        st.divider()
+        _render_notice(client, case_id, token, notice)
+
+    prompt = st.chat_input(
+        "Conte o que aconteceu ou responda à pergunta do assistente",
+        key="consumer_chat_input",
+        max_chars=8_000,
+        submit_mode="disable",
+    )
+    if prompt and prompt.strip():
+        try:
+            with st.status("Organizando o relato…", expanded=True) as status:
+                payload = client.send_message(
+                    case_id,
+                    token,
+                    prompt.strip(),
+                    client_message_id=uuid4().hex,
+                )
+                updated_case = _case_from_payload(payload)
+                _merge_assistant_message(
+                    updated_case,
+                    payload.get("assistant_message"),
+                )
+                _store_case(updated_case)
+                st.session_state.consumer_notice = None
+                status.update(
+                    label="Relato atualizado",
+                    state="complete",
+                    expanded=False,
+                )
+            st.rerun()
+        except ConsumerApiError as exc:
+            st.error(str(exc))
+
+
+def _render_conversation_and_summary(case: dict[str, Any]) -> None:
+    chat_column, summary_column = st.columns([3, 2], gap="large")
+    with chat_column:
+        st.subheader("Conversa")
+        messages = case.get("messages") or []
+        with st.container(border=True, height=360):
+            if not messages:
+                with st.chat_message("assistant"):
+                    st.write(
+                        "Conte o que aconteceu com o banco, quando ocorreu e qual "
+                        "solução você procura."
+                    )
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "assistant").lower()
+                streamlit_role = "user" if role in {"user", "consumer"} else "assistant"
+                content = message.get("content") or message.get("text") or ""
+                with st.chat_message(streamlit_role):
+                    st.text(str(content))
+
+    with summary_column:
+        st.subheader("Resumo do caso")
+        with st.container(border=True, height=360):
+            facts = case.get("facts") or {}
+            bank = facts.get("bank_name") or "Não informado"
+            category = ISSUE_LABELS.get(
+                str(facts.get("issue_category")),
+                facts.get("issue_category") or "Não definido",
+            )
+            st.markdown(f"**Instituição:** {bank}")
+            st.markdown(f"**Problema:** {category}")
+            if summary := facts.get("complaint_summary"):
+                st.caption(str(summary)[:500])
+
+            documents = case.get("documents") or []
+            with st.container(horizontal=True):
+                st.metric("Documentos", len(documents), border=True)
+                st.metric(
+                    "Fatos confirmados",
+                    "Sim" if case.get("facts_confirmed") else "Não",
+                    border=True,
+                )
+
+            missing = case.get("missing_fields") or []
+            if missing:
+                labels = [FACT_LABELS.get(str(item), str(item)) for item in missing]
+                st.warning("Ainda falta: " + ", ".join(labels))
+            elif case.get("ready_for_notice"):
+                st.success("Fatos mínimos preenchidos.")
+
+
+def _render_facts_form(
+    client: ConsumerApiClient,
+    case_id: str,
+    token: str,
+    case: dict[str, Any],
+) -> None:
+    st.subheader("Confirme os fatos")
+    st.caption(
+        "O assistente extrai apenas o que foi informado. Corrija qualquer campo "
+        "antes de gerar o documento."
+    )
+    facts = case.get("facts") or {}
+    _sync_fact_widgets(case, facts)
+
+    with st.form("consumer_facts_form"):
+        consumer_name = st.text_input(
+            "Seu nome completo",
+            key="consumer_fact_consumer_name",
+        )
+        bank_name = st.text_input(
+            "Banco ou instituição financeira",
+            key="consumer_fact_bank_name",
+        )
+        issue_category = st.selectbox(
+            "Tipo principal do problema",
+            options=list(ISSUE_LABELS),
+            format_func=lambda value: ISSUE_LABELS.get(value, value),
+            key="consumer_fact_issue_category",
+        )
+        complaint_summary = st.text_area(
+            "Resumo do ocorrido",
+            key="consumer_fact_complaint_summary",
+            height=140,
+        )
+        date_column, deadline_column = st.columns(2)
+        incident_period = date_column.text_input(
+            "Data ou período do ocorrido",
+            key="consumer_fact_incident_date_or_period",
+        )
+        response_deadline = deadline_column.number_input(
+            "Prazo de resposta (dias úteis)",
+            min_value=1,
+            max_value=30,
+            step=1,
+            key="consumer_fact_response_deadline_business_days",
+        )
+        prior_protocols = st.text_area(
+            "Protocolos e reclamações anteriores (um por linha)",
+            key="consumer_fact_prior_protocols",
+            height=90,
+        )
+        amount_column, paid_column = st.columns(2)
+        direct_loss = amount_column.number_input(
+            "Prejuízo direto (R$)",
+            min_value=0.0,
+            step=100.0,
+            format="%.2f",
+            key="consumer_fact_direct_loss_amount",
+        )
+        improper_payment = paid_column.number_input(
+            "Valor efetivamente pago em cobrança contestada (R$)",
+            min_value=0.0,
+            step=100.0,
+            format="%.2f",
+            key="consumer_fact_improper_payment_amount",
+            help="Use somente a parte do prejuízo que foi paga em uma cobrança que você contesta.",
+        )
+        additional_compensation = st.number_input(
+            "Compensação adicional pretendida (R$)",
+            min_value=0.0,
+            step=100.0,
+            format="%.2f",
+            key="consumer_fact_requested_compensation_amount",
+        )
+        unsuccessful_cost = st.number_input(
+            "Custo estimado se não houver acordo (R$)",
+            min_value=0.0,
+            step=100.0,
+            format="%.2f",
+            key="consumer_fact_unsuccessful_scenario_cost_amount",
+            help=(
+                "Opcional. Informe somente custos que você estimou explicitamente; "
+                "o sistema não presume custas, honorários ou duração de um processo."
+            ),
+        )
+        article_42_requested = st.checkbox(
+            "Quero que o cenário avalie, de forma condicional, a repetição em dobro do valor pago",
+            key="consumer_fact_article_42_double_repayment_requested",
+            help=(
+                "A devolução em dobro depende dos requisitos legais e não é aplicada "
+                "automaticamente pelo sistema."
+            ),
+        )
+        desired_resolution = st.text_area(
+            "Qual solução você espera do banco?",
+            key="consumer_fact_desired_resolution",
+            height=90,
+        )
+        confirmed = st.checkbox(
+            "Confirmo que este resumo corresponde ao meu relato e não contém informação inventada",
+            key="consumer_fact_confirmed",
+        )
+        submitted = st.form_submit_button(
+            "Salvar e confirmar fatos",
+            type="primary",
+            icon=":material/fact_check:",
+            width="stretch",
+        )
+
+    if not submitted:
+        return
+    if not bank_name.strip() or not complaint_summary.strip():
+        st.error("Informe ao menos a instituição e o resumo do ocorrido.")
+        return
+
+    payload = {
+        "consumer_name": consumer_name.strip() or None,
+        "bank_name": bank_name.strip(),
+        "issue_category": issue_category,
+        "complaint_summary": complaint_summary.strip(),
+        "incident_date_or_period": incident_period.strip() or None,
+        "prior_protocols": _split_protocols(prior_protocols),
+        "direct_loss_amount": float(direct_loss) if direct_loss else None,
+        "improper_payment_amount": (float(improper_payment) if improper_payment else None),
+        "article_42_double_repayment_requested": bool(article_42_requested),
+        "requested_compensation_amount": (
+            float(additional_compensation) if additional_compensation else None
+        ),
+        "unsuccessful_scenario_cost_amount": (
+            float(unsuccessful_cost) if unsuccessful_cost else None
+        ),
+        "desired_resolution": desired_resolution.strip() or None,
+        "response_deadline_business_days": int(response_deadline),
+        "facts_confirmed": bool(confirmed),
+    }
+    try:
+        updated = client.update_facts(case_id, token, payload)
+        _store_case(_case_from_payload(updated))
+        st.session_state.consumer_notice = None
+        _set_flash("success", "Fatos salvos e atualizados.")
+        st.rerun()
+    except ConsumerApiError as exc:
+        st.error(str(exc))
+
+
+def _sync_fact_widgets(case: dict[str, Any], facts: dict[str, Any]) -> None:
+    version = case.get("updated_at") or repr(sorted(facts.items()))
+    required_widget_keys = {
+        "consumer_fact_consumer_name",
+        "consumer_fact_bank_name",
+        "consumer_fact_issue_category",
+        "consumer_fact_complaint_summary",
+        "consumer_fact_incident_date_or_period",
+        "consumer_fact_prior_protocols",
+        "consumer_fact_direct_loss_amount",
+        "consumer_fact_improper_payment_amount",
+        "consumer_fact_article_42_double_repayment_requested",
+        "consumer_fact_requested_compensation_amount",
+        "consumer_fact_unsuccessful_scenario_cost_amount",
+        "consumer_fact_desired_resolution",
+        "consumer_fact_response_deadline_business_days",
+        "consumer_fact_confirmed",
+    }
+    if st.session_state.get(
+        "consumer_facts_synced_at"
+    ) == version and required_widget_keys.issubset(st.session_state):
+        return
+    current_category = str(facts.get("issue_category") or "other")
+    if current_category not in ISSUE_LABELS:
+        current_category = "other"
+    values = {
+        "consumer_fact_consumer_name": facts.get("consumer_name") or "",
+        "consumer_fact_bank_name": facts.get("bank_name") or "",
+        "consumer_fact_issue_category": current_category,
+        "consumer_fact_complaint_summary": facts.get("complaint_summary") or "",
+        "consumer_fact_incident_date_or_period": (facts.get("incident_date_or_period") or ""),
+        "consumer_fact_prior_protocols": "\n".join(
+            str(item) for item in (facts.get("prior_protocols") or [])
+        ),
+        "consumer_fact_direct_loss_amount": float(facts.get("direct_loss_amount") or 0.0),
+        "consumer_fact_improper_payment_amount": float(facts.get("improper_payment_amount") or 0.0),
+        "consumer_fact_article_42_double_repayment_requested": bool(
+            facts.get("article_42_double_repayment_requested")
+        ),
+        "consumer_fact_requested_compensation_amount": float(
+            facts.get("requested_compensation_amount") or 0.0
+        ),
+        "consumer_fact_unsuccessful_scenario_cost_amount": float(
+            facts.get("unsuccessful_scenario_cost_amount") or 0.0
+        ),
+        "consumer_fact_desired_resolution": facts.get("desired_resolution") or "",
+        "consumer_fact_response_deadline_business_days": int(
+            facts.get("response_deadline_business_days") or 10
+        ),
+        "consumer_fact_confirmed": bool(case.get("facts_confirmed")),
+    }
+    for key, value in values.items():
+        st.session_state[key] = value
+    st.session_state.consumer_facts_synced_at = version
+
+
+def _render_evidence_section(
+    client: ConsumerApiClient,
+    case_id: str,
+    token: str,
+    case: dict[str, Any],
+) -> None:
+    st.subheader("Documentos e evidências")
+    recommended = case.get("recommended_documents") or []
+    if recommended:
+        with st.expander("Documentos recomendados", expanded=not case.get("documents")):
+            for item in recommended:
+                label = item.get("label") if isinstance(item, dict) else item
+                st.markdown(f"- {label}")
+
+    documents = case.get("documents") or []
+    for document in documents:
+        if isinstance(document, dict):
+            _render_document(document)
+
+    upload_key = f"consumer_evidence_{st.session_state.consumer_upload_generation}"
+    with st.form("consumer_evidence_upload"):
+        uploads = st.file_uploader(
+            "Envie comprovantes em PDF",
+            type=["pdf"],
+            accept_multiple_files=True,
+            max_upload_size=20,
+            key=upload_key,
+            help="Exemplos: extrato, fatura, contrato, protocolo e resposta do banco.",
+        )
+        st.caption(
+            "Cada arquivo passa por varredura de instruções maliciosas antes de "
+            "ser usado como evidência."
+        )
+        submitted = st.form_submit_button(
+            "Analisar documentos",
+            icon=":material/upload_file:",
+            width="stretch",
+        )
+
+    if not submitted:
+        return
+    if not uploads:
+        st.warning("Selecione ao menos um PDF.")
+        return
+
+    failures: list[str] = []
+    latest_case = case
+    with st.status("Analisando documentos…", expanded=True) as status:
+        for upload in uploads:
+            status.write(f"Verificando `{upload.name}`")
+            try:
+                upload.seek(0)
+                response = client.upload_document(
+                    case_id,
+                    token,
+                    upload.name,
+                    upload,
+                )
+                latest_case = _case_from_payload(response)
+            except ConsumerApiError as exc:
+                failures.append(f"{upload.name}: {exc}")
+        if failures:
+            status.update(
+                label="Análise concluída com pendências",
+                state="error",
+                expanded=True,
+            )
+        else:
+            status.update(
+                label="Documentos analisados",
+                state="complete",
+                expanded=False,
+            )
+
+    _store_case(latest_case)
+    st.session_state.consumer_notice = None
+    st.session_state.consumer_upload_generation += 1
+    if failures:
+        _set_flash("warning", " | ".join(failures))
+    else:
+        _set_flash("success", "Documentos analisados e vinculados ao atendimento.")
+    st.rerun()
+
+
+def _render_document(document: dict[str, Any]) -> None:
+    status = str(document.get("status") or "processed")
+    assessment = document.get("security_assessment") or {}
+    risk = assessment.get("risk_level") or document.get("risk_level") or "unknown"
+    filename = document.get("filename") or document.get("name") or "Documento"
+    pages = document.get("pages") or document.get("page_count")
+    with st.container(border=True):
+        st.markdown(f"**{filename}**")
+        details = [f"status: {status}", f"segurança: {risk}"]
+        if pages:
+            details.append(f"{pages} página(s)")
+        st.caption(" · ".join(details))
+        warnings = document.get("warnings") or []
+        if isinstance(warnings, str):
+            warnings = [warnings]
+        for warning in warnings:
+            st.warning(str(warning))
+        if status in BLOCKED_DOCUMENT_STATUSES or risk in {"high", "critical"}:
+            st.error(
+                "Este arquivo não será usado automaticamente no rascunho. "
+                "Revise o alerta de segurança."
+            )
+
+
+def _render_generation_section(
+    client: ConsumerApiClient,
+    case_id: str,
+    token: str,
+    case: dict[str, Any],
+) -> None:
+    st.subheader("Gerar notificação extrajudicial")
+    documents = [item for item in (case.get("documents") or []) if isinstance(item, dict)]
+    usable_documents = [
+        item
+        for item in documents
+        if str(item.get("status") or "processed") not in BLOCKED_DOCUMENT_STATUSES
+    ]
+    missing = case.get("missing_fields") or []
+    ready = bool(case.get("ready_for_notice"))
+    confirmed = bool(case.get("facts_confirmed"))
+
+    if missing:
+        labels = [FACT_LABELS.get(str(item), str(item)) for item in missing]
+        st.warning("Complete os campos obrigatórios: " + ", ".join(labels))
+    if not confirmed:
+        st.warning("Salve o formulário marcando a confirmação dos fatos.")
+
+    if not usable_documents:
+        st.warning(
+            "É necessário ao menos um PDF aceito pela varredura de segurança. "
+            "O sistema não gera uma notificação que apresente alegações sem suporte "
+            "documental como fatos comprovados."
+        )
+
+    can_generate = ready and confirmed and bool(usable_documents)
+    button_label = "Gerar nova versão" if case.get("notice_available") else "Gerar rascunho"
+    if st.button(
+        button_label,
+        type="primary",
+        icon=":material/draft:",
+        disabled=not can_generate,
+        width="stretch",
+        key="consumer_generate_notice",
+    ):
+        try:
+            with st.status(
+                "Recuperando base legal e compondo o documento…",
+                expanded=True,
+            ) as status:
+                notice = client.generate_notice(case_id, token)
+                st.session_state.consumer_notice = _notice_from_payload(notice)
+                case["notice_available"] = True
+                _store_case(case)
+                status.update(
+                    label="Rascunho gerado",
+                    state="complete",
+                    expanded=False,
+                )
+            _set_flash(
+                "success",
+                "Rascunho gerado. Revise fatos, valores, evidências e base legal.",
+            )
+            st.rerun()
+        except ConsumerApiError as exc:
+            st.error(str(exc))
+
+
+def _render_notice(
+    client: ConsumerApiClient,
+    case_id: str,
+    token: str,
+    notice: dict[str, Any],
+) -> None:
+    st.subheader("Rascunho para revisão")
+    for warning in _as_text_list(notice.get("warnings")):
+        st.warning(warning)
+
+    notice_tab, legal_tab, evidence_tab, scenario_tab, audit_tab = st.tabs(
+        ["Notificação", "Base legal", "Evidências", "Cenário", "Auditoria"]
+    )
+    with notice_tab:
+        full_text = str(notice.get("full_text") or "Rascunho indisponível.")
+        st.markdown(_safe_generated_markdown(full_text))
+
+    with legal_tab:
+        _render_legal_grounds(notice.get("legal_grounds") or [])
+
+    with evidence_tab:
+        _render_evidence_references(notice.get("evidence_references") or [])
+
+    with scenario_tab:
+        _render_settlement_scenario(
+            notice.get("settlement") or notice.get("settlement_scenario") or {}
+        )
+
+    with audit_tab:
+        _render_consumer_audit(notice)
+
+    st.caption(
+        "Os arquivos são buscados somente quando você clica em baixar; o token "
+        "do atendimento não é colocado na URL."
+    )
+    short_id = case_id[:8]
+    markdown_column, pdf_column, docx_column = st.columns(3)
+    markdown_column.download_button(
+        "Baixar Markdown",
+        data=lambda: client.download_notice(case_id, token, "md"),
+        file_name=f"notificacao_{short_id}.md",
+        mime="text/markdown",
+        icon=":material/download:",
+        width="stretch",
+        on_click="ignore",
+        key=f"consumer_download_md_{short_id}",
+    )
+    pdf_column.download_button(
+        "Baixar PDF",
+        data=lambda: client.download_notice(case_id, token, "pdf"),
+        file_name=f"notificacao_{short_id}.pdf",
+        mime="application/pdf",
+        icon=":material/picture_as_pdf:",
+        width="stretch",
+        on_click="ignore",
+        key=f"consumer_download_pdf_{short_id}",
+    )
+    docx_column.download_button(
+        "Baixar DOCX",
+        data=lambda: client.download_notice(case_id, token, "docx"),
+        file_name=f"notificacao_{short_id}.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        icon=":material/description:",
+        width="stretch",
+        on_click="ignore",
+        key=f"consumer_download_docx_{short_id}",
+    )
+
+
+def _render_legal_grounds(grounds: Iterable[Any]) -> None:
+    rendered = False
+    for ground in grounds:
+        if not isinstance(ground, dict):
+            continue
+        rendered = True
+        authority = ground.get("authority")
+        if not isinstance(authority, dict):
+            authority = ground
+        source = authority.get("source_name") or authority.get("source") or "Base legal"
+        article = authority.get("article") or authority.get("provision_id") or ""
+        with st.container(border=True):
+            st.markdown(f"**{source} · {article}**")
+            if summary := authority.get("summary"):
+                st.write(summary)
+            application = ground.get("application_to_facts") or ground.get("application")
+            if application:
+                st.markdown("**Aplicação ao relato**")
+                st.write(application)
+            details = []
+            if authority.get("retrieval_rank") is not None:
+                details.append(f"rank {authority['retrieval_rank']}")
+            if authority.get("retrieval_score") is not None:
+                details.append(f"score {float(authority['retrieval_score']):.4f}")
+            if authority.get("chunk_id"):
+                details.append(f"chunk {authority['chunk_id']}")
+            if details:
+                st.caption(" · ".join(details))
+            official_url = str(authority.get("official_url") or "")
+            if _is_official_legal_url(official_url):
+                st.link_button(
+                    "Abrir fonte oficial",
+                    official_url,
+                    icon=":material/open_in_new:",
+                )
+    if not rendered:
+        st.info("Nenhum fundamento legal foi vinculado ao rascunho.")
+    else:
+        st.caption(
+            "Os textos exibidos são resumos referenciais. Confira a redação vigente "
+            "nos links oficiais antes do envio."
+        )
+
+
+def _render_evidence_references(references: Iterable[Any]) -> None:
+    rendered = False
+    for reference in references:
+        if not isinstance(reference, dict):
+            continue
+        rendered = True
+        filename = reference.get("filename") or reference.get("source") or "Documento"
+        page = reference.get("page") or reference.get("page_start")
+        page_label = f" · página {page}" if page is not None else ""
+        with st.container(border=True):
+            st.markdown(f"**{filename}{page_label}**")
+            quote = reference.get("quote") or reference.get("text_preview")
+            if quote:
+                st.code(str(quote), language=None, wrap_lines=True)
+            details = []
+            if reference.get("chunk_id"):
+                details.append(f"chunk {reference['chunk_id']}")
+            if reference.get("content_sha256"):
+                details.append(f"SHA-256 {reference['content_sha256']}")
+            if details:
+                st.caption(" · ".join(details))
+    if not rendered:
+        st.info(
+            "O rascunho não contém referência documental. Não trate o relato como "
+            "fato comprovado até reunir evidências."
+        )
+
+
+def _render_settlement_scenario(scenario: dict[str, Any]) -> None:
+    if not scenario:
+        st.info("Não foi calculado um cenário financeiro para este caso.")
+        return
+
+    probability_low = _number(
+        scenario,
+        "exploratory_success_probability_low",
+        "exploratory_weight_low",
+        "success_probability_low",
+        "probability_low",
+    )
+    probability_high = _number(
+        scenario,
+        "exploratory_success_probability_high",
+        "exploratory_weight_high",
+        "success_probability_high",
+        "probability_high",
+    )
+    expected_low = _number(
+        scenario,
+        "illustrative_expected_value_low",
+        "expected_value_low",
+        "ev_low",
+    )
+    expected_high = _number(
+        scenario,
+        "illustrative_expected_value_high",
+        "expected_value_high",
+        "ev_high",
+    )
+    proposed = _number(
+        scenario,
+        "public_proposal_amount",
+        "proposed_amount",
+        "proposal_amount",
+        "recommended_proposal_amount",
+    )
+    floor = _number(
+        scenario,
+        "private_reservation_amount",
+        "negotiation_floor",
+        "minimum_amount",
+    )
+    downside = _number(scenario, "downside_cost_amount")
+
+    with st.container(horizontal=True):
+        if probability_low is not None or probability_high is not None:
+            st.metric(
+                "Pesos exploratórios",
+                _format_probability_range(probability_low, probability_high),
+                border=True,
+            )
+        if expected_low is not None or expected_high is not None:
+            st.metric(
+                "Valor esperado",
+                _format_currency_range(expected_low, expected_high),
+                border=True,
+            )
+        if proposed is not None:
+            st.metric("Proposta inicial", _format_brl(proposed), border=True)
+        if floor is not None:
+            st.metric("Piso de negociação", _format_brl(floor), border=True)
+
+    if downside:
+        st.caption(
+            f"Custo explícito informado para o cenário sem acordo: {_format_brl(downside)}."
+        )
+
+    st.warning(
+        "Esses pesos não são probabilidades jurídicas calibradas. O resultado é um cenário de "
+        "negociação baseado nos valores informados, na completude do relato e nas "
+        "evidências disponíveis."
+    )
+    amount_rows = []
+    for label, key in (
+        ("Prejuízo direto informado", "direct_loss_amount"),
+        ("Valor pago em cobrança contestada", "improper_payment_amount"),
+        ("Compensação adicional informada", "requested_compensation_amount"),
+        ("Incremento condicional do art. 42", "conditional_article_42_increment_amount"),
+        ("Resultado ilustrativo inferior", "low_outcome_value"),
+        ("Resultado ilustrativo superior", "high_outcome_value"),
+    ):
+        value = _number(scenario, key)
+        if value is not None:
+            amount_rows.append({"Componente": label, "Valor": _format_brl(value)})
+    if amount_rows:
+        st.table(amount_rows)
+    if assumption := scenario.get("article_42_assumption"):
+        st.caption(str(assumption))
+    methodology = scenario.get("methodology")
+    if methodology:
+        st.markdown("**Como foi calculado**")
+        for item in _as_text_list(methodology):
+            st.markdown(f"- {item}")
+    caveats = _as_text_list(scenario.get("caveats"))
+    if caveats:
+        st.markdown("**Limitações**")
+        for item in caveats:
+            st.markdown(f"- {item}")
+
+
+def _render_consumer_audit(notice: dict[str, Any]) -> None:
+    release = notice.get("corpus_release_id")
+    if release:
+        st.caption(f"Versão da base legal: `{release}`")
+
+    rows = _retrieval_rows(notice.get("retrievals") or [])
+    if rows:
+        st.dataframe(
+            rows,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Rank": st.column_config.NumberColumn(format="%d"),
+                "Score": st.column_config.NumberColumn(format="%.4f"),
+                "No contexto": st.column_config.CheckboxColumn(),
+                "Chunk": st.column_config.TextColumn(pinned=True),
+            },
+        )
+    else:
+        st.info("Nenhum registro de recuperação foi anexado ao rascunho.")
+
+    assessments = notice.get("security_assessments") or []
+    if assessments:
+        st.markdown("**Varredura dos documentos**")
+        for assessment in assessments:
+            if not isinstance(assessment, dict):
+                continue
+            st.caption(
+                f"{assessment.get('filename') or 'Documento'} · "
+                f"risco {assessment.get('risk_level') or 'não informado'} · "
+                f"ação {assessment.get('recommended_action') or 'não informada'}"
+            )
+
+    st.caption(
+        "A auditoria identifica os trechos recuperados e se foram incluídos no "
+        "contexto. Conteúdo dos PDFs é tratado como dado não confiável, nunca como "
+        "instrução para o assistente."
+    )
+
+
+def _retrieval_rows(retrievals: Iterable[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for retrieval in retrievals:
+        if not isinstance(retrieval, dict):
+            continue
+        query = retrieval.get("query") or "-"
+        source = retrieval.get("source") or retrieval.get("agent") or "-"
+        results = retrieval.get("results")
+        if isinstance(results, list):
+            for result in results:
+                if isinstance(result, dict):
+                    rows.append(_retrieval_row(source, query, result))
+        else:
+            rows.append(_retrieval_row(source, query, retrieval))
+    return rows
+
+
+def _retrieval_row(
+    source: Any,
+    query: Any,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    page_start = result.get("page_start") or result.get("page")
+    page_end = result.get("page_end") or page_start
+    pages = (
+        f"{page_start}-{page_end}"
+        if page_start is not None and page_end != page_start
+        else page_start or "-"
+    )
+    return {
+        "Fonte": source,
+        "Consulta": query,
+        "Rank": result.get("rank") or result.get("retrieval_rank"),
+        "Score": result.get("score") or result.get("retrieval_score"),
+        "Chunk": result.get("chunk_id") or "-",
+        "Páginas": pages,
+        "No contexto": bool(result.get("included_in_context", True)),
+        "Prévia": result.get("text_preview") or "-",
+        "SHA-256": result.get("content_sha256") or "-",
+    }
+
+
+def _case_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    case = payload.get("case") or payload.get("snapshot") or payload
+    if not isinstance(case, dict):
+        raise ConsumerApiError("A API retornou um atendimento inválido.")
+    return case
+
+
+def _notice_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    notice = payload.get("notice") or payload
+    if not isinstance(notice, dict):
+        raise ConsumerApiError("A API retornou um rascunho inválido.")
+    return notice
+
+
+def _merge_assistant_message(case: dict[str, Any], assistant: Any) -> None:
+    if not assistant:
+        return
+    if isinstance(assistant, dict):
+        content = assistant.get("content") or assistant.get("text")
+    else:
+        content = str(assistant)
+    if not content:
+        return
+    messages = case.setdefault("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+        case["messages"] = messages
+    if not any(
+        isinstance(item, dict)
+        and (item.get("content") or item.get("text")) == content
+        and str(item.get("role") or "").lower() == "assistant"
+        for item in messages
+    ):
+        messages.append({"role": "assistant", "content": content})
+
+
+def _store_case(case: dict[str, Any]) -> None:
+    st.session_state.consumer_case = case
+    if case_id := case.get("case_id"):
+        st.session_state.consumer_case_id = str(case_id)
+
+
+def _reset_case_state() -> None:
+    for key in CONSUMER_STATE_KEYS:
+        if key in st.session_state:
+            del st.session_state[key]
+    for key in list(st.session_state):
+        if key.startswith("consumer_fact_") or key.startswith("consumer_evidence_"):
+            del st.session_state[key]
+    _initialize_state()
+
+
+def _set_flash(kind: str, message: str) -> None:
+    st.session_state.consumer_flash = {"kind": kind, "message": message}
+
+
+def _render_flash() -> None:
+    flash = st.session_state.pop("consumer_flash", None)
+    if not isinstance(flash, dict):
+        return
+    renderer = {
+        "success": st.success,
+        "warning": st.warning,
+        "error": st.error,
+    }.get(flash.get("kind"), st.info)
+    renderer(str(flash.get("message") or ""))
+
+
+def _split_protocols(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[\n,;]+", value) if item.strip()]
+
+
+def _as_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Iterable) and not isinstance(value, (dict, bytes)):
+        return [str(item) for item in value if item]
+    return [str(value)]
+
+
+def _safe_generated_markdown(value: str) -> str:
+    """Keep useful formatting while neutralizing HTML and remote image embeds."""
+    escaped = html.escape(value, quote=False)
+    return escaped.replace("![", "\\![")
+
+
+def _is_official_legal_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() in OFFICIAL_LEGAL_HOSTS
+
+
+def _number(mapping: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = mapping.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _format_brl(value: float) -> str:
+    formatted = f"{value:,.2f}"
+    return "R$ " + formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _format_currency_range(low: float | None, high: float | None) -> str:
+    if low is None:
+        return _format_brl(high or 0.0)
+    if high is None or high == low:
+        return _format_brl(low)
+    return f"{_format_brl(low)} – {_format_brl(high)}"
+
+
+def _format_probability_range(low: float | None, high: float | None) -> str:
+    def percentage(value: float) -> str:
+        normalized = value / 100 if value > 1 else value
+        return f"{normalized:.0%}"
+
+    if low is None:
+        return percentage(high or 0.0)
+    if high is None or high == low:
+        return percentage(low)
+    return f"{percentage(low)} – {percentage(high)}"

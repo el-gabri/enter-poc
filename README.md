@@ -30,6 +30,29 @@ Every RAG query also produces a durable audit trail with the ranked chunk
 IDs, pages, sections, similarity scores, hashes, latency, and an explicit
 marker for the chunks that actually reached each model prompt.
 
+## Two product journeys
+
+The existing **business** journey remains the lawsuit-analysis workflow above.
+Legal teams upload an incoming petition, assess exposure and prepare an initial
+defense and settlement posture.
+
+The **consumer** journey is a separate, bank-first workflow. A guided chat
+structures the complaint, identifies missing facts and asks for supporting PDF
+evidence. Every upload passes through the same prompt-injection security gate.
+The assistant then retrieves relevant, versioned summaries of provisions from
+the [Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicao.htm)
+and the [Consumer Defense Code (CDC)](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm),
+keeps legal-source citations separate from evidence citations, and prepares an
+auditable draft for export.
+
+The generated artifact is a **notificação extrajudicial com proposta de
+acordo** (extrajudicial notice with a settlement proposal), not a lawsuit or a
+court filing. Its financial section is a transparent scenario calculation
+based on user-confirmed losses, no-agreement costs and explicit assumptions;
+it does not claim calibrated odds of winning or invent a damages award. The
+system never sends or files the notice. A qualified Brazilian lawyer must
+review it before use.
+
 ## Architecture
 
 ```
@@ -62,6 +85,7 @@ Full diagram and layer map: [docs/architecture.md](docs/architecture.md).
 | [0009](docs/adr/0009-in-process-async-jobs.md) | In-process async jobs with a broker-ready interface |
 | [0010](docs/adr/0010-prompt-injection-security-gate.md) | Scan untrusted document content before indexing or LLM analysis |
 | [0011](docs/adr/0011-retrieval-traceability-and-evaluation.md) | Persist query-to-context provenance and evaluate retrieval rankings |
+| [0012](docs/adr/0012-bounded-consumer-extrajudicial-notice.md) | Bound the consumer workflow to auditable, human-reviewed extrajudicial notice drafts |
 
 ### Explainability model
 
@@ -175,6 +199,7 @@ used.
 ```
 app/
 ├── core/           config (pydantic-settings), structured logging
+├── consumer/       guided intake · legal corpus · evidence · notice composer
 ├── llm/            LLMClient port · OpenAI + Mock adapters · pricing
 ├── schemas/        typed contracts for every layer (the domain model)
 ├── ingestion/      PDF -> text, OCR fallback, language detection
@@ -191,7 +216,7 @@ app/
 └── api/            FastAPI app · async job manager · routes
 frontend/           Streamlit UI (pure API client)
 eval_data/          golden dataset
-docs/               architecture + 11 ADRs + demo script
+docs/               architecture + 12 ADRs + demo script
 tests/              offline unit, integration and security tests
 ```
 
@@ -209,9 +234,13 @@ tests/              offline unit, integration and security tests
 - Case-law retrieval (jurisprudence RAG) as a second corpus
 - Human feedback loop: lawyer corrections feeding the golden dataset
 - AuthN/AuthZ and per-tenant data isolation at the API layer
+- Calibrated consumer outcome models from reviewed, representative settlement
+  and judgment data; statutory text alone cannot supply win probabilities
 
 ## Disclaimer
 
-Reports are AI-generated decision support with explicit confidence levels
-and citations. They do not constitute legal advice and must be reviewed by
-a qualified lawyer.
+Reports and consumer notices are AI-generated decision support with explicit
+provenance. They do not constitute legal advice and must be reviewed by a
+qualified lawyer. The consumer flow does not create an attorney-client
+relationship, submit a complaint, interrupt a limitation period or replace
+urgent help from a lawyer or the competent authorities.

@@ -85,6 +85,16 @@ class RagPipeline:
         )
         return chunks
 
+    async def delete_document(self, doc_id: str) -> None:
+        """Remove every indexed chunk for ``doc_id``.
+
+        Case-oriented features use this public operation to honor deletion and
+        retention requests without reaching through the RAG facade into a
+        concrete vector-store adapter.
+        """
+        await self._store.delete_document(doc_id)
+        logger.info("document_index_deleted", doc_id=doc_id)
+
     async def retrieve(
         self, query: str, doc_id: str, k: int | None = None
     ) -> list[RetrievedChunk]:

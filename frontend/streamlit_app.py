@@ -12,6 +12,8 @@ import os
 import requests
 import streamlit as st
 
+from frontend.consumer_view import render_consumer_app
+
 API_URL = os.getenv("LITIGATION_API_URL", "http://localhost:8000")
 POLL_SECONDS = 1.0
 
@@ -43,6 +45,19 @@ SECURITY_ACTION_LABELS = {
 st.set_page_config(
     page_title="AI Litigation Copilot", page_icon=":material/balance:", layout="wide"
 )
+
+audience = st.segmented_control(
+    "Como você quer usar o Copilot?",
+    options=["Sou consumidor", "Sou empresa"],
+    default="Sou empresa",
+    required=True,
+    key="audience_mode",
+    width="stretch",
+)
+
+if audience == "Sou consumidor":
+    render_consumer_app(API_URL)
+    st.stop()
 
 
 # ---------------------------------------------------------------- helpers

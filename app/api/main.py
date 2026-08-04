@@ -8,13 +8,16 @@ Run locally:
     uvicorn app.api.main:app --reload
 """
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.consumer_routes import router as consumer_router
 from app.api.jobs import AnalysisJobManager
 from app.api.routes import router
+from app.consumer.service import ConsumerCaseService
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.ingestion.ocr import create_default_ocr_engine
@@ -31,31 +34,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings.log_level)
         llm = create_llm_client(settings)
         rag = create_rag_pipeline(settings)
+        ingestion = DocumentIngestionService(
+            ocr_engine=create_default_ocr_engine(), max_pages=settings.max_document_pages
+        )
+        prompt_injection_detector = PromptInjectionDetector(
+            llm,
+            mode=settings.prompt_injection_scan_mode,
+            strict_max_chars=settings.prompt_injection_strict_max_chars,
+            strict_max_batches=settings.prompt_injection_strict_max_batches,
+        )
         run_store = RunStore(settings.data_dir / "runs.jsonl")
         app.state.run_store = run_store
         app.state.job_manager = AnalysisJobManager(
-            ingestion=DocumentIngestionService(
-                ocr_engine=create_default_ocr_engine(), max_pages=settings.max_document_pages
-            ),
+            ingestion=ingestion,
             graph=build_analysis_graph(
                 llm,
                 rag,
                 create_datajud_client(settings),
-                prompt_injection_detector=PromptInjectionDetector(
-                    llm,
-                    mode=settings.prompt_injection_scan_mode,
-                    strict_max_chars=settings.prompt_injection_strict_max_chars,
-                    strict_max_batches=settings.prompt_injection_strict_max_batches,
-                ),
+                prompt_injection_detector=prompt_injection_detector,
             ),
             run_store=run_store,
             uploads_dir=settings.uploads_dir,
             retain_uploads=settings.retain_uploads,
         )
+        app.state.consumer_service = ConsumerCaseService(
+            ingestion=ingestion,
+            detector=prompt_injection_detector,
+            rag=rag,
+        )
+        app.state.consumer_uploads_dir = settings.uploads_dir / "consumer"
         yield
 
     app = FastAPI(
@@ -70,6 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router)
+    app.include_router(consumer_router)
     return app
 
 

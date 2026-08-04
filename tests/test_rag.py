@@ -400,6 +400,18 @@ async def test_retrieval_is_isolated_per_document() -> None:
     assert results == []  # never leak chunks across documents
 
 
+async def test_pipeline_can_delete_an_indexed_document() -> None:
+    pipeline = RagPipeline(
+        embedder=MockEmbeddingClient(), store=InMemoryVectorStore(), default_k=5
+    )
+    doc = _petition()
+    await pipeline.index_document(doc)
+
+    await pipeline.delete_document(doc.doc_id)
+
+    assert await pipeline.retrieve("danos morais", doc_id=doc.doc_id) == []
+
+
 async def test_chroma_adapter_roundtrip(tmp_path) -> None:
     chromadb = pytest.importorskip("chromadb")  # noqa: F841
     from app.rag.vector_store import ChromaVectorStore
