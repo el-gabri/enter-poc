@@ -132,11 +132,20 @@ class Settings(BaseSettings):
     datajud_api_key: str | None = Field(default=None, repr=False)
     datajud_base_url: str = "https://api-publica.datajud.cnj.jus.br"
 
+    # --- API ---
+    # Comma-separated list of browser origins allowed by CORS. The default
+    # covers the local Streamlit frontend; production deployments override it.
+    cors_allow_origins: str = "http://localhost:8501"
+
     # --- Output ---
     report_language: str = "pt-BR"
 
     # --- Logging ---
     log_level: str = "INFO"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
     @property
     def chroma_dir(self) -> Path:

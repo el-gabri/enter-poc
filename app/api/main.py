@@ -90,7 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:8501"],  # Streamlit frontend
+        allow_origins=settings.cors_origin_list,  # local Streamlit by default
         allow_methods=["*"],
         allow_headers=["*"],
     )
