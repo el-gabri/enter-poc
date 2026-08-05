@@ -227,6 +227,8 @@ tests/              offline unit, integration and security tests
 
 ## Future improvements
 
+- Versioned CLT (labor-law) corpus grounding the labor journey, following the
+  CDC snapshot pattern
 - Brazilian jurisprudence (case-law RAG) as a second corpus
 - Redis-backed job queue + horizontal workers (ADR 0009 documents the path)
 - AuthN/AuthZ and per-tenant data isolation at the API layer

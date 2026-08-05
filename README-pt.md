@@ -233,6 +233,8 @@ tests/              testes offline de unidade, integração e segurança
 
 ## Melhorias futuras
 
+- Corpus versionado da CLT (legislação trabalhista) fundamentando a jornada
+  trabalhista, no mesmo padrão do snapshot do CDC
 - Jurisprudência brasileira (RAG de decisões) como segundo corpus
 - Fila de jobs com Redis + workers horizontais (o ADR 0009 documenta o caminho)
 - AuthN/AuthZ e isolamento de dados por tenant na camada de API
