@@ -15,9 +15,14 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install
-        run: pip install -e ".[dev]"
+        # frontend extra is required: the test suite imports Streamlit at
+        # collection time (tests/test_frontend_entrypoint.py).
+        run: pip install -e ".[dev,frontend]"
       - name: Lint
         run: ruff check app tests frontend
+      - name: Type check (informative until the 50 strict errors are cleared)
+        run: mypy app
+        continue-on-error: true
       - name: Tests (offline - mock LLM provider)
         run: pytest -q
       - name: Evaluation harness smoke test
