@@ -12,6 +12,7 @@ build/
 data/chroma/
 data/uploads/
 data/reports/
+data/runs.jsonl
 .idea/
 .vscode/
 plan.md
