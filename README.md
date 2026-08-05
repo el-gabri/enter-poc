@@ -1,68 +1,42 @@
-# AI Litigation Copilot
+# Give Exit — AI Litigation Copilot
 
-AI assistant that analyzes Brazilian lawsuit PDFs and prepares an initial
-legal strategy for legal teams - built as a production-grade demonstration
-of modern AI engineering: multi-agent orchestration (LangGraph), RAG,
+[Leia em português](README-pt.md)
+
+AI assistant for Brazilian litigation, built as a production-grade demonstration
+of modern AI engineering: multi-agent orchestration (LangGraph), auditable RAG,
 structured outputs, observability, evaluation and explainability.
 
 > **Not a replacement for lawyers.** Every conclusion carries a confidence
-> score, explicit reasoning and verbatim citations from the source
-> document, so a human can audit every claim.
-
-## The problem
-
-When a company is sued, the legal team spends hours on triage: reading the
-petition, identifying parties and deadlines, estimating exposure, drafting
-an initial strategy. This copilot compresses that to minutes - and keeps
-every conclusion verifiable.
-
-## What it does
-
-Upload a lawsuit PDF and get a structured report: executive summary,
-lawsuit classification, extracted entities (parties, court, claim value,
-deadlines), timeline, claim-by-claim assessment, risk analysis with
-financial exposure, suggested defense strategy, settlement posture,
-missing information, and validation of the case number against DataJud -
-the official CNJ court-records API. Before any document content reaches the
-RAG or LLM layers, a prompt-injection gate scans every page and includes any
-security findings in the report. Export as Markdown, PDF, DOCX or JSON.
-Every RAG query also produces a durable audit trail with the ranked chunk
-IDs, pages, sections, similarity scores, hashes, latency, and an explicit
-marker for the chunks that actually reached each model prompt.
+> score, explicit reasoning and verbatim citations from the source document,
+> so a human can audit every claim.
 
 ## Two product journeys
 
-The existing **business** journey remains the lawsuit-analysis workflow above.
-Legal teams upload an incoming petition, assess exposure and prepare an initial
-defense and settlement posture.
+**Business** — a legal team uploads a lawsuit PDF and gets a structured report
+in minutes: executive summary, classification, extracted entities (parties,
+court, claim value, deadlines), timeline, claim-by-claim assessment, risk
+analysis with financial exposure, defense strategy, settlement posture, and
+case-number validation against DataJud (the official CNJ court-records API).
+Export as Markdown, PDF, DOCX or JSON.
 
-The **consumer** journey is a separate workflow for complaints against
-suppliers, companies or institutions. A guided chat structures the complaint
-and accepts supporting PDF, PNG and JPEG evidence.
-Every upload passes through the prompt-injection security gate. Images and
-scanned PDFs are accepted only when OCR produces reviewable text; unreadable
-files are rejected instead of being treated as supporting evidence.
-The assistant retrieves from a versioned offline snapshot of the complete,
-compiled [Consumer Defense Code (CDC)](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm)
-and a separately identified set of relevant provisions from the
-[Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicaocompilado.htm).
-Official statutory text is parsed at legal boundaries and kept distinct from
-editorial metadata. Legal-source citations remain separate from evidence
-citations in the auditable draft.
+**Consumer** — a guided chat structures a complaint against a supplier and
+accepts PDF/PNG/JPEG evidence (rejected when OCR yields no reviewable text).
+The assistant retrieves from a versioned offline snapshot of the compiled
+[Consumer Defense Code (CDC)](https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm)
+plus selected provisions of the
+[Brazilian Constitution](https://www.planalto.gov.br/ccivil_03/constituicao/constituicaocompilado.htm),
+and drafts a **notificação extrajudicial with a settlement proposal** — not a
+lawsuit or court filing. The financial section is a transparent scenario
+calculation: amounts found in evidence become candidates and enter the total
+only after the consumer confirms them; amounts mentioned in chat are never
+promoted automatically. Every component exposes its source, excerpt and hashes
+for audit. The system never sends or files the notice — a qualified Brazilian
+lawyer must review it first.
 
-The generated artifact is a **notificação extrajudicial com proposta de
-acordo** (extrajudicial notice with a settlement proposal), not a lawsuit or a
-court filing. Its financial section is a transparent scenario calculation
-based on confirmed losses, optional no-agreement costs and explicit assumptions.
-The user does not choose an additional compensation amount. Explicit values
-found in evidence are shown as candidates and enter the calculation only after
-the consumer confirms which one is the factual loss. Amounts mentioned in chat
-remain part of the untrusted narrative and are never promoted automatically to
-confirmed losses. The interface exposes each financial component's source,
-excerpt and hashes for audit. The calculator then produces an auditable
-negotiation proposal without claiming calibrated odds.
-The system never sends or files the notice. A qualified Brazilian lawyer must
-review it before use.
+In both journeys, every page of untrusted content passes a prompt-injection
+security gate before reaching the RAG or LLM layers, and every RAG query
+leaves a durable audit trail (ranked chunk IDs, scores, hashes, and which
+chunks actually reached each prompt).
 
 ## Architecture
 
@@ -75,32 +49,32 @@ Browser -> Streamlit -> FastAPI (202 + async job)
                        +--> halt for human review / block -------------------------------+
     -> RAG: Business dense retrieval | Consumer legal BM25+dense/RRF -> optional reranker
        -> isolated, versioned ChromaDB collections (corpus hash + embedding revision)
-       -> retrieval audit: query -> top-k ranks/scores -> prompt inclusion
     -> LLM port: OpenAI | Anthropic Claude | Google Gemini | Mock (offline demo)
     -> Deterministic report composer -> MD / PDF / DOCX / JSON
 ```
 
-Full diagram and layer map: [docs/architecture.md](docs/architecture.md).
+Full diagram, layer map and the prompt-injection routing policy:
+[docs/architecture.md](docs/architecture.md).
 
 ### Design decisions (ADRs)
 
 | ADR | Decision |
 |---|---|
-| [0001](docs/adr/0001-use-langgraph.md) | LangGraph over LangChain chains (conditional routing, parallelism, introspectable graph) |
-| [0002](docs/adr/0002-llm-provider-abstraction.md) | Own 2-method LLM port instead of LiteLLM - observability and structured outputs are mandatory by type |
-| [0003](docs/adr/0003-chromadb-vector-store.md) | ChromaDB behind a VectorStore port (Pinecone = one new adapter) |
+| [0001](docs/adr/0001-use-langgraph.md) | LangGraph over LangChain chains |
+| [0002](docs/adr/0002-llm-provider-abstraction.md) | Own 2-method LLM port instead of LiteLLM |
+| [0003](docs/adr/0003-chromadb-vector-store.md) | ChromaDB behind a VectorStore port |
 | [0004](docs/adr/0004-async-first.md) | Async-first I/O from day one |
-| [0005](docs/adr/0005-pymupdf-ocr-fallback.md) | PyMuPDF + heuristic OCR fallback (AGPL trade-off documented) |
-| [0006](docs/adr/0006-section-aware-chunking.md) | Section-aware chunking for Brazilian petitions (DOS FATOS / DO DIREITO / DOS PEDIDOS) |
-| [0007](docs/adr/0007-deterministic-report-composer.md) | No LLM at the last mile - the report is assembled by code |
+| [0005](docs/adr/0005-pymupdf-ocr-fallback.md) | PyMuPDF + heuristic OCR fallback |
+| [0006](docs/adr/0006-section-aware-chunking.md) | Section-aware chunking for Brazilian petitions |
+| [0007](docs/adr/0007-deterministic-report-composer.md) | No LLM at the last mile — the report is assembled by code |
 | [0008](docs/adr/0008-citation-based-groundedness.md) | Hallucination detection by mechanical citation verification |
 | [0009](docs/adr/0009-in-process-async-jobs.md) | In-process async jobs with a broker-ready interface |
-| [0010](docs/adr/0010-prompt-injection-security-gate.md) | Scan untrusted document content before indexing or LLM analysis |
-| [0011](docs/adr/0011-retrieval-traceability-and-evaluation.md) | Persist query-to-context provenance and evaluate retrieval rankings |
-| [0012](docs/adr/0012-bounded-consumer-extrajudicial-notice.md) | Bound the consumer workflow to auditable, human-reviewed extrajudicial notice drafts |
-| [0013](docs/adr/0013-versioned-consumer-law-retrieval.md) | Use versioned official statutes, legal-boundary chunks and evaluated hybrid retrieval |
+| [0010](docs/adr/0010-prompt-injection-security-gate.md) | Scan untrusted content before indexing or LLM analysis |
+| [0011](docs/adr/0011-retrieval-traceability-and-evaluation.md) | Persist query-to-context provenance; evaluate rankings |
+| [0012](docs/adr/0012-bounded-consumer-extrajudicial-notice.md) | Bound the consumer flow to auditable, human-reviewed drafts |
+| [0013](docs/adr/0013-versioned-consumer-law-retrieval.md) | Versioned official statutes + evaluated hybrid retrieval |
 
-### Explainability model
+### Explainability
 
 Every important conclusion is a `ConfidentConclusion`:
 
@@ -113,104 +87,52 @@ Every important conclusion is a `ConfidentConclusion`:
 }
 ```
 
-The evaluation harness verifies each citation actually occurs in the
-source document - a fabricated quote is caught mechanically, not by
-another LLM's opinion.
+The evaluation harness verifies each citation actually occurs in the source
+document — a fabricated quote is caught mechanically, not by another LLM's
+opinion.
 
 ### Observability
 
-Every LLM call returns typed metadata (provider, model, latency, tokens,
-cost, prompt version) - agents physically cannot make untracked calls.
-Per-run aggregates persist to a JSONL run store surfaced in the API
-(`/runs`, `/runs/totals`) and the UI's cost panel.
-
-Retrieval traces are nested under each agent trace and persist the raw top-k
-rankings without storing full chunk text: query/hash, retrieval mode,
-requested/candidate `k`, RRF settings, embedding/query-instruction/model
-revisions, reranker, legal source/release/unit hashes, rank, score,
-chunk/document IDs, section, page span, latency, and whether the chunk survived
-deduplication and context truncation. Failed embedding/search attempts retain one event per
-query, successful sibling lookups, and the consuming agent's status, error, and
-prompt version. Text previews are disabled by default; enable
-`LITIGATION_RETRIEVAL_TRACE_INCLUDE_PREVIEWS=true` only under an explicit data
-retention and access-control policy. The full audit is available at
-`/analyses/{job_id}/retrievals`; historical traces remain available at
-`/runs/{run_id}/retrievals`. The Streamlit explainability tab provides the same
-data as a filterable table. `citation_retrieval_coverage` counts a citation only
-when its chunk was included in the context of the agent that produced it.
+Every LLM call returns typed metadata (provider, model, latency, tokens, cost,
+prompt version) — agents physically cannot make untracked calls. Per-run
+aggregates persist to a JSONL run store surfaced at `/runs` and `/runs/totals`
+and in the UI cost panel. The full retrieval audit for a job is available at
+`/analyses/{job_id}/retrievals` (chunk text previews are opt-in via
+`LITIGATION_RETRIEVAL_TRACE_INCLUDE_PREVIEWS`); the Streamlit explainability
+tab shows the same data as a filterable table.
 
 ### Prompt-injection defense
 
-Every page is checked with deterministic Portuguese and English rules before
-indexing. In the default `balanced` mode, suspicious excerpts also receive a
-bounded semantic review; document text is always treated as untrusted data.
-The routing policy is deterministic: `none`/`low` proceeds, `medium` proceeds
-with a warning and masks flagged excerpts from downstream prompts, `high`
-halts with job state `review_required`, and `critical` ends with job state
-`blocked`. These outcomes are not counted as completed legal analyses. The
-original document is never altered, and page-attributed findings remain
-visible in the report.
-
-Set `LITIGATION_PROMPT_INJECTION_SCAN_MODE=rules` for deterministic checks
-only, keep the default `balanced` mode for targeted semantic review, or use
-`strict` to semantically review all page text (with higher latency and cost).
-Strict mode is capped by `LITIGATION_PROMPT_INJECTION_STRICT_MAX_CHARS` and
-`LITIGATION_PROMPT_INJECTION_STRICT_MAX_BATCHES`; exceeding either budget
-fails closed instead of creating an unbounded number of model calls.
+Deterministic Portuguese/English rules check every page before indexing;
+document text is always treated as untrusted data. Routing is deterministic:
+`none`/`low` proceeds, `medium` proceeds with a warning and masks flagged
+excerpts, `high` halts as `review_required`, `critical` ends as `blocked`.
+`LITIGATION_PROMPT_INJECTION_SCAN_MODE` selects `rules` (deterministic only),
+`balanced` (default — semantic review of suspicious excerpts) or `strict`
+(bounded semantic review of all text; exceeding its budget fails closed).
 
 ### Evaluation
 
 ```bash
-python -m app.evaluation           # golden dataset in eval_data/
+python -m app.evaluation                    # business golden dataset (offline in CI)
+python -m app.evaluation.consumer_runner    # consumer legal retrieval, mock+BM25 baseline
 ```
 
-Metrics: groundedness, hallucination rate, citation coverage, extraction
-accuracy, completeness, classification accuracy, Precision@K, Recall@K,
-HitRate@K, MRR@K, NDCG@K, and LLM-as-judge response quality (real provider
-only). Retrieval labels use relevant page ranges and passage anchors so they
-remain valid when chunk sizes change. Overlapping chunks that satisfy the same
-passage label count as one relevance unit, and unresolved labels fail loudly.
-Runs offline in CI with the mock provider as a pipeline health check.
-
-Consumer legal retrieval has a separate seed dataset. It is intentionally
-marked `requires_legal_review`: the cases are useful for engineering bake-offs,
-but they are not yet a production legal benchmark. The file pins the exact
-corpus release and SHA-256; stale labels fail before retrieval starts.
-
-```bash
-# Complete CDC, mock embeddings + BM25/RRF; no API key or model download.
-python -m app.evaluation.consumer_runner
-
-# Explicit configured-provider bake-off (may call an API or load a local model).
-python -m app.evaluation.consumer_runner \
-  --retriever app.evaluation.consumer_retrievers:configured_hybrid_retriever
-```
-
-The Consumer suite reports subdivision and article Recall@5/10, MRR, graded
-NDCG, article/subdivision precision, hard-negative and inactive-authority rates,
-retrieval failure rate, and abstention on complaints outside consumer law.
-Its JSON retains the two production-equivalent queries, ranked hits, dataset/
-corpus/configuration manifest, and aggregates by category and slice. Configure
-`LITIGATION_EMBEDDING_PROVIDER=sentence_transformers` with
-`LITIGATION_EMBEDDING_MODEL=ufca-llms/jua-4B-mixed` or `BAAI/bge-m3` after
-installing `.[local-embeddings]`. Pin the Hugging Face model revision and keep
-the local batch size small for JUÁ 4B. Changing the embedding revision or
-corpus hash uses a new Chroma collection and requires reindexing. The built-in
-mock+BM25 run is a deterministic health baseline, not evidence that its ranking
-is production-ready.
-
-The pinned CDC source is refreshed only by an explicit maintainer operation:
+Metrics include groundedness, hallucination rate, citation coverage,
+extraction/classification accuracy, Precision/Recall/HitRate/MRR/NDCG@K, and
+LLM-as-judge quality (real provider only). The consumer suite pins the exact
+corpus release and SHA-256, adds article/subdivision metrics, hard negatives,
+inactive-authority checks and abstention on out-of-scope complaints — it is an
+engineering bake-off seed, not yet a production legal benchmark. The pinned CDC
+snapshot is refreshed only by an explicit maintainer operation:
 
 ```bash
 python -m app.consumer.update_cdc_snapshot --retrieved-on YYYY-MM-DD
 pytest tests/test_consumer_legal_corpus.py tests/test_consumer_evaluation.py
 ```
 
-Review the statutory diff, manifest hash and golden labels before accepting a
-new corpus release. The refresh command writes `review_status=pending_review`;
-promotion requires an explicit manifest review/status change, combined corpus
-release update, and golden-label review. Runtime requests never download law
-from Planalto.
+Review the statutory diff, manifest hash and golden labels before promoting a
+new release. Runtime requests never download law from Planalto.
 
 ## Quickstart
 
@@ -236,95 +158,46 @@ uvicorn app.api.main:app --reload                 # terminal 1
 streamlit run frontend/streamlit_app.py           # terminal 2
 ```
 
-Local OCR for images and scanned PDFs also requires the Tesseract system binary
-and Portuguese language data. The API Docker image already installs both.
+Local OCR also requires the Tesseract binary with Portuguese language data
+(the API Docker image already installs both).
 
 ### Choose an AI provider
 
-Edit `.env` using one of the configurations below. `LITIGATION_LLM_MODEL` is
-optional: when absent, the app selects a valid default for that provider.
-Selecting a real provider without its matching key fails immediately with an
-actionable error; the app never silently substitutes mock output.
-
-#### No API key: offline demo
-
-This is already the default in `.env.example` and when no `.env` exists:
+Configure `.env`. `LITIGATION_LLM_MODEL` is optional — when absent, the app
+picks a valid default for the provider. Selecting a real provider without its
+key fails immediately; the app never silently substitutes mock output.
 
 ```dotenv
+# Offline demo (default; deterministic placeholders, not real analysis)
 LITIGATION_LLM_PROVIDER=mock
-LITIGATION_EMBEDDING_PROVIDER=auto
-```
 
-The full UI, ingestion, security, RAG and export pipeline runs without network
-calls. Generated model fields are deterministic placeholders and **must not be
-treated as a real legal analysis or notice**. Tests and CI use this mode.
-
-#### OpenAI
-
-```dotenv
+# OpenAI ("auto" reuses the key for embeddings)
 LITIGATION_LLM_PROVIDER=openai
 LITIGATION_OPENAI_API_KEY=sk-...
-LITIGATION_EMBEDDING_PROVIDER=auto
-# Optional: LITIGATION_LLM_MODEL=gpt-4o-mini
-# Optional: LITIGATION_EMBEDDING_MODEL=text-embedding-3-small
-```
 
-`auto` reuses the OpenAI key for embeddings.
-
-#### Anthropic Claude
-
-Anthropic does not provide an embeddings API. With Claude, `auto` therefore
-uses local multilingual `BAAI/bge-m3` embeddings and needs the optional local
-dependency:
-
-```bash
-pip install -e ".[dev,frontend,ocr,local-embeddings]"
-```
-
-```dotenv
+# Anthropic Claude (no embeddings API: "auto" uses local BAAI/bge-m3 —
+# install ".[local-embeddings]" and, for Docker, set
+# LITIGATION_API_EXTRAS=ocr,local-embeddings)
 LITIGATION_LLM_PROVIDER=anthropic
 LITIGATION_ANTHROPIC_API_KEY=sk-ant-...
-LITIGATION_EMBEDDING_PROVIDER=auto
-# Optional: LITIGATION_LLM_MODEL=claude-sonnet-5
-# Optional: LITIGATION_EMBEDDING_MODEL=BAAI/bge-m3
-```
 
-For Docker, also set `LITIGATION_API_EXTRAS=ocr,local-embeddings` in `.env`
-before `docker compose up --build`. The embedding model is downloaded on first
-use, so allow enough disk and memory. Alternatively, explicitly configure
-OpenAI or Gemini embeddings and provide that provider's key.
-
-#### Google Gemini
-
-```dotenv
+# Google Gemini ("auto" reuses the key for Gemini embeddings)
 LITIGATION_LLM_PROVIDER=gemini
 LITIGATION_GEMINI_API_KEY=...
-LITIGATION_EMBEDDING_PROVIDER=auto
-# Optional: LITIGATION_LLM_MODEL=gemini-3.6-flash
-# Optional: LITIGATION_EMBEDDING_MODEL=gemini-embedding-2
-LITIGATION_GEMINI_EMBEDDING_DIMENSIONS=768
 ```
 
-`auto` reuses the Gemini key for purpose-aware Gemini Embedding 2 retrieval.
-Changing provider, embedding model or dimensions creates a different Chroma
-collection; existing documents must be reindexed. Model defaults follow the
-current official [Claude model list](https://platform.claude.com/docs/en/about-claude/models/overview),
-[Gemini model list](https://ai.google.dev/gemini-api/docs/models) and
-[Gemini embeddings guide](https://ai.google.dev/gemini-api/docs/embeddings).
+Changing embedding provider, model or dimensions creates a new Chroma
+collection; existing documents must be reindexed.
 
 ### Document handling
 
-Uploads are streamed with a 20 MB API limit. The business journey remains
-PDF-only and rejects files above `LITIGATION_MAX_DOCUMENT_PAGES` (250 by
-default). Consumer evidence accepts PDF, PNG and JPEG; images above 40
-megapixels are rejected before raster decoding. Images and scanned PDFs without
-usable OCR text are also rejected.
-Raw consumer evidence is always deleted immediately after ingestion. Business
-PDFs are deleted after analysis by default; set
-`LITIGATION_RETAIN_UPLOADS=true` only when an explicit retention policy
-requires it. ChromaDB and run history remain persistent storage and should be
-protected with authentication, tenant isolation and an operational retention
-policy before real case data is used.
+Uploads stream with a 20 MB limit. Business accepts PDF only (up to
+`LITIGATION_MAX_DOCUMENT_PAGES`, 250 by default); consumer evidence accepts
+PDF/PNG/JPEG with a 40-megapixel cap. Raw consumer evidence is deleted right
+after ingestion; business PDFs are deleted after analysis unless
+`LITIGATION_RETAIN_UPLOADS=true`. ChromaDB and run history persist — protect
+them with authentication, tenant isolation and a retention policy before using
+real case data.
 
 ## Project structure
 
@@ -336,37 +209,31 @@ app/
 ├── schemas/        typed contracts for every layer (the domain model)
 ├── ingestion/      PDF/image -> text, OCR fallback, language detection
 ├── security/       prompt-injection scanning, policy and safe context masking
-├── rag/            document/legal chunking · embeddings · hybrid retrieval · reranking
+├── rag/            chunking · embeddings · hybrid retrieval · reranking
 ├── agents/         classifier · extraction · legal analysis · risk · strategy
 ├── prompts/        versioned PT-BR prompt templates
 ├── orchestration/  LangGraph state machine
 ├── enrichment/     DataJud (CNJ) client + graph node
 ├── services/       analysis use case · deterministic report composer
 ├── evaluation/     metrics · golden runner · LLM judge · CLI
-├── observability/  JSONL run store with durable agent/retrieval traces
+├── observability/  JSONL run store with agent/retrieval traces
 ├── reporting/      Markdown (canonical) -> PDF / DOCX converters
 └── api/            FastAPI app · async job manager · routes
 frontend/           Streamlit UI (pure API client)
-eval_data/          golden dataset
+eval_data/          golden datasets
 docs/               architecture + 13 ADRs + demo script
 tests/              offline unit, integration and security tests
 ```
 
-## Screenshots
-
-<!-- After running locally: add screenshots of upload flow, agent stepper,
-     risk cards, explainability tab and cost panel here. -->
-
 ## Future improvements
 
-- Add brazilian jurisprudence
+- Brazilian jurisprudence (case-law RAG) as a second corpus
 - Redis-backed job queue + horizontal workers (ADR 0009 documents the path)
-- Pinecone adapter for multi-tenant scale
-- Case-law retrieval (jurisprudence RAG) as a second corpus
-- Human feedback loop: lawyer corrections feeding the golden dataset
 - AuthN/AuthZ and per-tenant data isolation at the API layer
-- Calibrated consumer outcome models from reviewed, representative settlement
-  and judgment data; statutory text alone cannot supply win probabilities
+- Managed vector store adapter (e.g. pgvector/Pinecone) for multi-tenant scale
+- Human feedback loop: lawyer corrections feeding the golden dataset
+- Calibrated outcome models from reviewed settlement and judgment data;
+  statutory text alone cannot supply win probabilities
 
 ## Disclaimer
 
